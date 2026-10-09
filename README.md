@@ -1,7 +1,7 @@
 # Dungeon Blitz: R Launcher
 
-A desktop launcher that plays Dungeon Blitz with Adobe Flash embedded, so players do not
-need a browser that still has Flash. It ships for Windows, macOS and Linux.
+A desktop launcher that plays Dungeon Blitz in Adobe's standalone Flash Player, so players
+do not need a browser that still has Flash. It ships for Windows, macOS and Linux.
 
 The launcher is a sign-in screen, not a control panel. It asks for one thing — sign in
 with Discord — and once that is done it opens the game window and connects to the server.
@@ -10,6 +10,55 @@ A player who has signed in before is not asked again.
 In the background it also arms the Flash plugin, connects the player's Discord lobby so
 lobby chat works, publishes Discord rich presence, and mirrors the player's in-game chat
 into that lobby — in both directions — for as long as the game window is open.
+
+## Game engine: the standalone Flash Player
+
+The game runs in **Adobe Flash Player itself** -- the standalone player Adobe calls the
+projector (`flashplayer_32_sa.exe` on Windows, `Flash Player.app` on macOS, `flashplayer`
+on Linux). The launcher starts it on the game's SWF, straight from the selected server:
+
+```
+flashplayer_32_sa.exe http://<server>/p/cbp/DungeonBlitz.swf?fv=cbp&gv=cbp&clientrev=...
+```
+
+It used to run in the PPAPI plugin extracted from FlashBrowser, inside a Chromium 87
+window. That plugin sits behind Chromium's plugin host, compositor and IPC, which is where
+the input and frame delay came from. The projector is its own process, window and
+renderer, with nothing between it and the game. It also does not carry the 2021-01-12 kill
+switch the browser plugins have, so any 32.x projector plays.
+
+| Platform | Put this in `payload/projector/<platform>/` |
+| --- | --- |
+| Windows | `flashplayer_32_sa.exe` (32-bit; it runs on 64-bit Windows too) |
+| macOS | `Flash Player.app` (Intel; runs under Rosetta on Apple Silicon) |
+| Linux | `flashplayer` (from `flash_player_sa_linux.x86_64.tar.gz`) |
+
+`tools/stage-vendor.js` copies it to `vendor/projector/<platform>/` and the package carries
+it as an extra resource. In a checkout you can drop it in a gitignored `projector/` folder at
+the repository root instead. The launcher also looks in the usual install places (and in
+Downloads), and the **Choose Flash Player...** button takes one by hand. A player who
+picks one by hand does not need to restart: the projector is started fresh for every game.
+
+**What the launcher now does for the page.** The projector loads only the SWF, not the game
+page, so the page's script does not run. The launcher does its jobs instead while the
+projector is open (`lib/gameHost.js`):
+
+- It polls `/api/presence/self` every 4 s and publishes rich presence.
+- It measures latency to each game region and reports it to `/api/region-rtt`.
+
+Sign-in needs nothing from the page. The server signs a fresh game connection in from the
+pending hand-off that the saved launcher token recreates, and the OAuth callback signs in
+an open connection by itself.
+
+**Fallback.** If no usable projector is found, the game opens on the PPAPI plugin exactly as
+before. The status strip shows which engine is in use:
+
+- `Player - <version> - <source>` is the projector.
+- `plugin - ...`, in amber, is the fallback.
+
+`DUNGEON_BLITZ_ENGINE=plugin` forces the plugin, for comparing the two on one machine.
+Preflight prints a loud warning when a package has no projector, and only fails when it has
+neither engine.
 
 ## Why Electron 11
 
@@ -37,7 +86,7 @@ payload/flash/<platform>/     pepflashplayer64.dll | PepperFlashPlayer.plugin | 
 payload/social/<platform>/    discord_social_bridge[.exe] + the SDK runtime library
 ```
 
-## Flash plugin
+## Flash plugin (fallback engine)
 
 ```bash
 npm run extract-flash

@@ -61,17 +61,23 @@ function engineRows(state) {
         systemValue = system.product;
     }
 
+    // The engine leads the value: the standalone Flash Player is the one the launcher wants,
+    // and "plugin" says at a glance that this copy fell back to the PPAPI plugin.
     let flashValue = 'missing';
     let flashTone = 'bad';
-    let flashDetail = 'No Flash plugin was found. Run `npm run extract-flash` or choose one by hand.';
+    let flashDetail = 'No Flash Player was found. Choose the standalone Flash Player (flashplayer_32_sa) by hand.';
     if (flash.found) {
         flashDetail = flash.path || '';
         if (flash.archMismatch) {
             flashValue = `${(flash.architectures || []).join('/')}-only - cannot load`;
             flashTone = 'bad';
         } else {
-            flashValue = [flash.version || 'unknown version', flash.source].filter(Boolean).join(' - ');
-            flashTone = 'ok';
+            const engine = flash.engine === 'projector' ? 'Player' : flash.engine === 'plugin' ? 'plugin' : '';
+            flashValue = [engine, flash.version || 'unknown version', flash.source].filter(Boolean).join(' - ');
+            flashTone = flash.engine === 'plugin' ? 'warn' : 'ok';
+            if (flash.engine === 'plugin') {
+                flashDetail = `${flash.path || ''}\nNo standalone Flash Player was found, so the game runs on the slower PPAPI plugin.`;
+            }
         }
     }
 
@@ -310,7 +316,7 @@ function render(state) {
     elements.forget.hidden = !state.discord.remembered;
 
     if (!flash.found) {
-        showProblem('The Flash plugin is missing. Point the launcher at it to continue.', 'bad');
+        showProblem('Flash Player is missing. Point the launcher at it to continue.', 'bad');
     } else if (flash.archMismatch) {
         showProblem(
             `The Flash plugin is ${flash.architectures.join('/')} but this launcher runs as a ` +

@@ -256,6 +256,30 @@ function main() {
     assert.strictEqual(row(rows, 'Flash').value, 'x64-only - cannot load');
     assert.strictEqual(row(rows, 'Flash').tone, 'bad');
 
+    // The standalone Flash Player is the engine: the row says so, and is healthy.
+    render(
+        baseState(
+            {
+                ...ARMED_FLASH,
+                engine: 'projector',
+                path: 'C:\\Program Files\\Dungeon Blitz R\\resources\\vendor\\projector\\win32\\flashplayer_32_sa.exe',
+                version: '32.0.0.465',
+                architectures: ['ia32']
+            },
+            IDLE_SOCIAL
+        )
+    );
+    rows = rowsFrom(registry);
+    assert.strictEqual(row(rows, 'Flash').value, 'Player - 32.0.0.465 - vendor');
+    assert.strictEqual(row(rows, 'Flash').tone, 'ok');
+
+    // Falling back to the plugin plays, but is the slower engine: a warning, not a fault.
+    render(baseState({ ...ARMED_FLASH, engine: 'plugin' }, IDLE_SOCIAL));
+    rows = rowsFrom(registry);
+    assert.strictEqual(row(rows, 'Flash').value, 'plugin - 32.0.0.303 - vendor');
+    assert.strictEqual(row(rows, 'Flash').tone, 'warn');
+    assert.ok(row(rows, 'Flash').detail.includes('No standalone Flash Player'), 'the tooltip says why');
+
     // Everything idle is normal: presence and chat both start with the game.
     render(baseState(MISSING_FLASH, IDLE_SOCIAL));
     rows = rowsFrom(registry);

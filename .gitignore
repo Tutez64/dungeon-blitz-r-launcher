@@ -3,6 +3,7 @@ dist/
 vendor/
 # Root-anchored: an unanchored `flash/` would also swallow payload/flash/.
 /flash/
+/projector/
 .DS_Store
 
 # Local state from a private build tool. Nothing in this repository reads it.

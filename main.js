@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 
 const { ChatRelay } = require('./lib/chatRelay');
@@ -10,6 +11,8 @@ const { createLauncherSessionRecovery } = require('./lib/launcherSessionRecovery
 const discordAuth = require('./lib/discordAuth');
 const { exists, inspectInstallLocation, isWritableDirectory } = require('./lib/install');
 const { findFlashPlugin, findVendoredPlugin } = require('./lib/flash');
+const { GameHost } = require('./lib/gameHost');
+const { findProjector, isChosenProjector, projectorCommand, resolveSwfUrl } = require('./lib/projector');
 const { compatibilitySwitches, describeWindows, unsupportedArchitectureMessage, unsupportedWindowsMessage } = require('./lib/windowsSupport');
 const { PresenceBridge } = require('./lib/presence');
 const { SocialBridge } = require('./lib/social');
@@ -86,11 +89,18 @@ chatRelay.on('state', () => pushState());
 const gameStats = new GameStats();
 gameStats.on('state', () => pushState());
 
+// While the game runs in the standalone projector, the launcher does what the game page's
+// script would have: rich presence and region latency (lib/gameHost.js).
+const gameHost = new GameHost({ presence });
+
 let launcherWindow = null;
 let gameWindow = null;
+// The standalone Flash Player running the game, when that is the engine.
+let gameProcess = null;
 let loginWatcher = null;
 let flashPlugin = null;
 let flashArmed = false;
+let projector = null;
 let currentGameOrigin = '';
 let discordAccount = { linked: false, email: '', name: '' };
 let remembered = false;
@@ -108,10 +118,48 @@ function locateFlash(preferredPath) {
     });
 }
 
+function locateProjector(preferredPath) {
+    return findProjector({
+        preferredPath,
+        // The same gitignored drop point as the plugin's, for a checkout.
+        extraDirectories: [path.join(LAUNCHER_ROOT, 'projector')]
+    });
+}
+
+/**
+ * What runs the game: 'projector' (Adobe's standalone Flash Player, its own process and
+ * window) whenever one is usable, else 'plugin' (the PPAPI plugin inside a Chromium 87
+ * window), else '' when neither is. DUNGEON_BLITZ_ENGINE=plugin forces the old engine,
+ * which is how the two are compared on one machine.
+ */
+function gameEngine() {
+    if (process.env.DUNGEON_BLITZ_ENGINE !== 'plugin' && projector && !projector.archMismatch) {
+        return 'projector';
+    }
+    return flashArmed ? 'plugin' : '';
+}
+
+function gameRunning() {
+    return Boolean((gameWindow && !gameWindow.isDestroyed()) || gameProcess);
+}
+
 // Chromium reads the plugin switches once, while it starts up -- after that the path is
 // frozen for the life of the process. A player who points at a different plugin therefore
-// gets a relaunch rather than a silently ignored setting.
+// gets a relaunch rather than a silently ignored setting. The plugin stays armed even when
+// the projector is the engine: it is the fallback if the projector goes missing.
 function armFlash() {
+    projector = locateProjector(state.read().projectorPath);
+    if (projector) {
+        console.log(
+            `[Flash] Engine: ${projector.source} standalone Flash Player ${projector.version || '(version unknown)'} at ${projector.path}`
+        );
+        if (projector.archMismatch) {
+            console.log(`[Flash] WARNING: the projector is ${projector.architectures.join('/')} and cannot run on this machine.`);
+        }
+    } else {
+        console.log('[Flash] No standalone Flash Player found; the game runs on the PPAPI plugin.');
+    }
+
     flashPlugin = locateFlash(state.read().flashPath);
     if (!flashPlugin) {
         flashArmed = false;
@@ -184,7 +232,7 @@ function resolveSelectedServer() {
  * deliberately Flash-less build startable.
  */
 function buildIsPlayable() {
-    if (!app.isPackaged || flashArmed) {
+    if (!app.isPackaged || gameEngine()) {
         return true;
     }
     return process.env.DUNGEON_BLITZ_ALLOW_NO_FLASH === '1';
@@ -193,7 +241,7 @@ function buildIsPlayable() {
 function refuseToStart() {
     const vendored = findVendoredPlugin();
     const detail = [
-        'This copy of the launcher has no Flash plugin, so the game could not start even after signing in.',
+        'This copy of the launcher has no Flash Player, so the game could not start even after signing in.',
         '',
         `Running from: ${app.getAppPath()}`,
         'This is an incomplete or outdated build.',
@@ -204,7 +252,7 @@ function refuseToStart() {
         'To start anyway (a deliberately Flash-less build), set DUNGEON_BLITZ_ALLOW_NO_FLASH=1.'
     ].join('\n');
 
-    console.log('[Flash] Refusing to start: this build carries no Flash plugin.');
+    console.log('[Flash] Refusing to start: this build carries no Flash Player and no Flash plugin.');
     if (vendored) {
         console.log(`[Flash] (a vendored plugin was found at ${vendored} but could not be armed)`);
     }
@@ -265,10 +313,26 @@ function presenceSummary() {
 }
 
 function flashStatus() {
+    if (gameEngine() === 'projector') {
+        return {
+            found: true,
+            armed: true,
+            engine: 'projector',
+            path: projector.path,
+            version: projector.version,
+            source: projector.source,
+            // The kill switch lives in the browser plugins; the projector never had one.
+            killSwitch: false,
+            architectures: projector.architectures,
+            archMismatch: false
+        };
+    }
+
     if (!flashPlugin) {
         return {
             found: false,
             armed: false,
+            engine: '',
             path: '',
             version: '',
             source: '',
@@ -281,6 +345,7 @@ function flashStatus() {
     return {
         found: true,
         armed: flashArmed,
+        engine: 'plugin',
         path: flashPlugin.path,
         version: flashPlugin.version,
         source: flashPlugin.source,
@@ -346,7 +411,7 @@ function launcherState() {
         servers,
         selectedServerUrl: selected ? selected.url : '',
         serverReachable,
-        gameRunning: Boolean(gameWindow && !gameWindow.isDestroyed()),
+        gameRunning: gameRunning(),
         windows: windowsStatus(),
         flash: flashStatus(),
         presence: presenceSummary(),
@@ -550,16 +615,7 @@ function createGameWindow(url) {
     gameWindow.on('closed', () => {
         gameWindow = null;
         currentGameOrigin = '';
-        // Presence and lobby chat belong to a game session, so closing the game ends
-        // both; keeping them up would leave the player shown as playing nothing.
-        presence.stop();
-        chatRelay.stop();
-        gameStats.stop();
-        stopAccountPolling();
-        if (launcherWindow && !launcherWindow.isDestroyed()) {
-            launcherWindow.show();
-        }
-        pushState();
+        endGameSession();
     });
 
     gameWindow.once('ready-to-show', () => gameWindow.show());
@@ -568,9 +624,87 @@ function createGameWindow(url) {
     startAccountPolling();
 }
 
+// Presence and lobby chat belong to a game session, so closing the game ends both;
+// keeping them up would leave the player shown as playing nothing.
+function endGameSession() {
+    gameHost.stop();
+    presence.stop();
+    chatRelay.stop();
+    gameStats.stop();
+    stopAccountPolling();
+    if (launcherWindow && !launcherWindow.isDestroyed()) {
+        launcherWindow.show();
+    } else if (!BrowserWindow.getAllWindows().length && process.platform !== 'darwin') {
+        // The player closed the launcher while playing; with the game gone too there is
+        // nothing left open, which is when the launcher has always quit.
+        app.quit();
+    }
+    pushState();
+}
+
+/**
+ * Opens the game in Adobe's standalone Flash Player.
+ *
+ * The projector loads the SWF straight from the server, so the game connects exactly as
+ * it does from the page, and runs in Flash Player's own window and renderer instead of a
+ * plugin box inside Chromium 87.
+ *
+ * @returns {Promise<{ ok: boolean, message?: string }>}
+ */
+async function launchProjector(serverUrl, settings) {
+    const swfUrl = await resolveSwfUrl(serverUrl);
+    const { command, args } = projectorCommand(projector, swfUrl);
+    console.log(`[Flash] Starting ${command} ${args.join(' ')}`);
+
+    let child;
+    try {
+        child = spawn(command, args, { stdio: 'ignore', windowsHide: false });
+    } catch (error) {
+        return { ok: false, message: `Flash Player could not be started: ${(error && error.message) || error}` };
+    }
+
+    // A spawn that fails (a missing or non-executable file) leaves no pid and reports why
+    // as an 'error' on the next tick. Electron 11's Node 12 has no 'spawn' event to wait
+    // for instead.
+    if (!child.pid) {
+        const error = await new Promise((resolve) => child.once('error', resolve));
+        return { ok: false, message: `Flash Player could not be started: ${(error && error.message) || error}` };
+    }
+    child.on('error', (error) => console.log(`[Flash] Flash Player: ${(error && error.message) || error}`));
+
+    gameProcess = child;
+    child.once('exit', (code, signal) => {
+        console.log(`[Flash] Flash Player exited (${signal || `code ${code}`})`);
+        if (gameProcess === child) {
+            gameProcess = null;
+            endGameSession();
+        }
+    });
+
+    gameHost.start({ serverUrl, presence: Boolean(settings.startDiscordBridge) });
+    startAccountPolling();
+    return { ok: true };
+}
+
+function stopGameProcess() {
+    if (gameProcess) {
+        const child = gameProcess;
+        gameProcess = null;
+        try {
+            child.kill();
+        } catch {
+            // Already gone.
+        }
+    }
+}
+
 async function play(serverId) {
     if (gameWindow && !gameWindow.isDestroyed()) {
         gameWindow.focus();
+        return { ok: true };
+    }
+    if (gameProcess) {
+        // Flash Player's window is its own; it is already open.
         return { ok: true };
     }
 
@@ -582,19 +716,20 @@ async function play(serverId) {
     if (!selected) {
         return { ok: false, message: 'No servers configured. Check servers.json.' };
     }
-    if (!flashArmed) {
+    const engine = gameEngine();
+    if (!engine) {
         return {
             ok: false,
             message: flashPlugin
                 ? 'The Flash path changed. Restart the launcher to pick it up.'
-                : 'The Flash plugin is missing. Run `npm run extract-flash` or choose it by hand.'
+                : 'Flash Player is missing. Choose the standalone Flash Player (flashplayer_32_sa) by hand.'
         };
     }
 
     // Arming only sets command-line switches; the plugin is loaded in-process when the
     // game page asks for it, and an architecture mismatch fails silently there. Refuse
     // with the actual mismatch so the fix is obvious instead of a dead plugin box.
-    if (flashPlugin.archMismatch) {
+    if (engine === 'plugin' && flashPlugin.archMismatch) {
         return {
             ok: false,
             message:
@@ -653,6 +788,18 @@ async function play(serverId) {
             getLauncherToken: () => sessionCache.read().token || ''
         });
         void gameStats.sync();
+    }
+
+    if (engine === 'projector') {
+        const launched = await launchProjector(selected.url, settings);
+        if (!launched.ok) {
+            gameHost.stop();
+            presence.stop();
+            chatRelay.stop();
+            gameStats.stop();
+        }
+        pushState();
+        return launched;
     }
 
     createGameWindow(selected.url);
@@ -1003,15 +1150,23 @@ function registerIpc() {
     });
 
     ipcMain.handle('launcher:browseFlash', async () => {
+        // The standalone Flash Player is what the launcher wants; a PPAPI plugin is still
+        // accepted as the fallback engine.
         const filters =
             process.platform === 'win32'
-                ? [{ name: 'Flash PPAPI plugin', extensions: ['dll'] }]
+                ? [
+                      { name: 'Flash Player', extensions: ['exe'] },
+                      { name: 'Flash PPAPI plugin', extensions: ['dll'] }
+                  ]
                 : process.platform === 'darwin'
-                  ? [{ name: 'Flash PPAPI plugin', extensions: ['plugin'] }]
-                  : [{ name: 'Flash PPAPI plugin', extensions: ['so'] }];
+                  ? [{ name: 'Flash Player', extensions: ['app', 'plugin'] }]
+                  : [
+                        { name: 'Flash Player', extensions: ['*'] },
+                        { name: 'Flash PPAPI plugin', extensions: ['so'] }
+                    ];
 
         const result = await dialog.showOpenDialog(launcherWindow, {
-            title: 'Choose the Flash plugin',
+            title: 'Choose Flash Player',
             properties: process.platform === 'darwin' ? ['openFile', 'openDirectory'] : ['openFile'],
             filters
         });
@@ -1021,6 +1176,14 @@ function registerIpc() {
         }
 
         const chosen = result.filePaths[0];
+        // The projector is started per game, so a new one applies on the next play with no
+        // restart -- unlike the plugin, whose path Chromium freezes at startup.
+        if (isChosenProjector(chosen)) {
+            state.write({ projectorPath: chosen });
+            projector = locateProjector(chosen);
+            return launcherState();
+        }
+
         state.write({ flashPath: chosen });
         const rescanned = locateFlash(chosen);
         if ((rescanned && rescanned.path) !== (flashPlugin && flashPlugin.path)) {
@@ -1120,7 +1283,7 @@ if (!app.requestSingleInstanceLock()) {
         // device token on the way, so the game page finds a sign-in waiting for it. If the
         // token has been revoked or has expired, play() says so and the launcher window is
         // already up with the Discord button on it.
-        if (remembered && flashArmed) {
+        if (remembered && gameEngine()) {
             void play();
         }
 
@@ -1133,6 +1296,12 @@ if (!app.requestSingleInstanceLock()) {
     });
 
     app.on('window-all-closed', () => {
+        // Flash Player's window is not one of ours: closing the launcher while the game is
+        // open in it leaves the session running, the same as closing the launcher beside the
+        // game window always did. endGameSession() quits once the game closes too.
+        if (gameProcess) {
+            return;
+        }
         presence.stop();
         chatRelay.stop();
         social.stop();
@@ -1142,6 +1311,8 @@ if (!app.requestSingleInstanceLock()) {
     });
 
     app.on('before-quit', () => {
+        stopGameProcess();
+        gameHost.stop();
         presence.stop();
         chatRelay.stop();
         gameStats.stop();

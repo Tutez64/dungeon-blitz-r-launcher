@@ -2,8 +2,9 @@
 'use strict';
 
 /**
- * Checks that a build's target platform has a Flash plugin in vendor/ before
- * electron-builder runs.
+ * Checks that a build's target platform has something to run the game on in vendor/ --
+ * the standalone Flash Player, or failing that the Flash plugin -- before electron-builder
+ * runs.
  *
  * A package built without the plugin still runs -- the launcher falls back to scanning
  * the player's own Flash installs -- but most players have none: 1.0.3's macOS build
@@ -18,10 +19,18 @@ const fs = require('fs');
 const path = require('path');
 
 const { pluginArchitectures } = require('../lib/flash');
+const { canExecute, projectorInDirectory } = require('../lib/projector');
 const { findUnpackagedFiles } = require('../lib/packageFiles');
 
 const LAUNCHER_ROOT = path.resolve(__dirname, '..');
 const VENDOR_ROOT = path.join(LAUNCHER_ROOT, 'vendor', 'flash');
+const PROJECTOR_ROOT = path.join(LAUNCHER_ROOT, 'vendor', 'projector');
+
+const EXPECTED_PROJECTOR = {
+    win32: 'flashplayer_32_sa.exe',
+    darwin: 'Flash Player.app',
+    linux: 'flashplayer'
+};
 
 const EXPECTED = {
     win32: 'pepflashplayer64.dll (or pepflashplayer.dll)',
@@ -166,12 +175,52 @@ function checkPackagedFiles() {
     return false;
 }
 
-function checkFlash(platform, arch) {
+/**
+ * The standalone Flash Player is the game engine; the plugin is only its fallback. A
+ * package without the projector still plays -- on the plugin, with the delay the projector
+ * exists to remove -- so its absence is a loud warning rather than a failure.
+ *
+ * @returns {boolean} Whether this platform's package carries a projector it can run.
+ */
+function checkProjector(platform, arch) {
+    const directory = path.join(PROJECTOR_ROOT, platform);
+    const found = projectorInDirectory(directory, platform);
+
+    if (found) {
+        const { macBundleExecutable, parseBinaryArchitectures } = require('../lib/flash');
+        const executable = platform === 'darwin' ? macBundleExecutable(found) : found;
+        const architectures = executable ? parseBinaryArchitectures(executable) : [];
+        const targets = arch ? [arch] : configuredArchitectures(platform);
+        const unable = targets.filter((target) => !canExecute(architectures, { platform, arch: target }));
+        if (unable.length) {
+            console.warn(
+                `[preflight] WARNING: ${path.basename(found)} is ${architectures.join('/')} and cannot run on ${unable.join('/')}.`
+            );
+        }
+        console.log(`[preflight] ${platform}: Flash Player ready -> ${path.basename(found)}`);
+        return true;
+    }
+
+    console.warn('');
+    console.warn(`[preflight] WARNING: no standalone Flash Player for ${platform} in vendor/.`);
+    console.warn(`[preflight] Expected: ${directory}${path.sep}${EXPECTED_PROJECTOR[platform]}`);
+    console.warn('[preflight] This package will run the game on the PPAPI plugin instead, the engine the');
+    console.warn('[preflight] projector replaces. Put it in payload/projector/<platform>/ and rebuild.');
+    console.warn('');
+    return false;
+}
+
+function checkFlash(platform, arch, hasProjector) {
     const { directory, found } = describeVendor(platform);
 
     if (found.length) {
-        console.log(`[preflight] ${platform}: Flash ready -> ${found.join(', ')}`);
+        console.log(`[preflight] ${platform}: Flash plugin (fallback) ready -> ${found.join(', ')}`);
         warnIfArchUnsupported(platform, directory, found[0], arch);
+        return true;
+    }
+
+    if (hasProjector) {
+        console.log(`[preflight] ${platform}: no Flash plugin fallback; the standalone Flash Player is the engine.`);
         return true;
     }
 
@@ -203,7 +252,8 @@ function main() {
 
     // Both run either way, so fixing one failure does not hide the other.
     const filesOk = checkPackagedFiles();
-    const flashOk = checkFlash(platform, arch);
+    const projectorOk = checkProjector(platform, arch);
+    const flashOk = checkFlash(platform, arch, projectorOk);
     if (!filesOk || !flashOk) {
         process.exit(1);
     }
