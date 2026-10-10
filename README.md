@@ -11,6 +11,48 @@ In the background it also connects the player's Discord lobby so lobby chat work
 publishes Discord rich presence, and mirrors the player's in-game chat into that lobby — in
 both directions — for as long as the game is open.
 
+## A free, non-commercial preservation project
+
+Dungeon Blitz was a game a lot of us grew up with, and when Flash was switched off it
+became almost impossible to play. This project exists so it is not lost: so the people who
+remember it can play it again, and so people who never got the chance can see what it was.
+
+We want to be clear about what this is and what it is not:
+
+- **It is free, and it will stay free.** You do not pay anything to download the launcher
+  or to play. There is no price, no subscription, no paid item and no advertising.
+- **Donations are optional, and they buy nothing.** The Minesa Studios accepts donations
+  from people who want to support the project, but a donation unlocks nothing in the game.
+  A player who donates gets exactly the same game as one who does not.
+- **It is not a commercial product, and nobody may make it one.** The launcher was made by
+  The Minesa Studios and is given away free. The Minesa Studios is a group made up only of
+  the project's contributors and sponsors, and we work on it in our spare time because we
+  care about the game. The launcher is licensed under the
+  [PolyForm Noncommercial License 1.0.0](LICENSE): you can use, change and share it for
+  free, but nobody can sell it, charge for it or build a paid product on it.
+- **It is a fan project, not an official one.** We are not affiliated with, endorsed by or
+  working on behalf of the original developers or publishers of Dungeon Blitz. The game's
+  name, art, music, characters and everything else that makes it Dungeon Blitz belong to
+  their owners. We claim none of it as ours.
+- **Adobe Flash Player and the Discord Social SDK belong to Adobe and Discord.** They ship
+  with the launcher only so the game can run and connect, and nothing here gives anyone
+  rights to them. See [LICENSE](LICENSE) for what our own license does and does not cover.
+
+### Where to download it
+
+The only official place to get the launcher is the
+[Releases page](https://github.com/theminesastudios/dungeon-blitz-r-launcher/releases) of
+this repository. If anyone asks you to pay for it, or offers a "premium" or modified copy,
+it did not come from us. Please do not pay for it, and please let us know.
+
+### For rights holders
+
+If you own rights to Dungeon Blitz, or to anything else used here, and you are not
+comfortable with this project, please talk to us. Open an
+[issue](https://github.com/theminesastudios/dungeon-blitz-r-launcher/issues) or contact
+The Minesa Studios directly. We will listen, and we will take down or change whatever you
+ask us to without argument. We would much rather work with you than against you.
+
 ## Game engine: the standalone Flash Player
 
 The game runs in **Adobe Flash Player itself** -- `flashplayer_32_sa`, the standalone
