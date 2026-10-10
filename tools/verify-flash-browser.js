@@ -10,17 +10,23 @@
  * check would refuse its main play button can never be published.
  *
  * Usage: node tools/verify-flash-browser.js <vendor/flashbrowser/<target>> --target <win32-x64|darwin-x64>
+ *        node tools/verify-flash-browser.js <folder> --list   # one line per file, to diff two copies
  */
 
 const path = require('path');
 
 const { INTEGRITY_PATH, inspectFlashBrowser, verifyFlashBrowser } = require('../lib/flashBrowser');
-const { readExpected } = require('../lib/integrity');
+const { readExpected, treeLines } = require('../lib/integrity');
 
 const args = process.argv.slice(2);
 const directory = args.find((arg) => !arg.startsWith('--'));
 const targetIndex = args.indexOf('--target');
 const target = targetIndex >= 0 ? args[targetIndex + 1] : path.basename(String(directory || ''));
+
+if (directory && args.includes('--list')) {
+    process.stdout.write(`${treeLines(directory).join('\n')}\n`);
+    process.exit(0);
+}
 
 if (!directory || !target) {
     console.error('Usage: node tools/verify-flash-browser.js <folder> --target <win32-x64|darwin-x64>');

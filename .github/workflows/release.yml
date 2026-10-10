@@ -219,7 +219,12 @@ jobs:
               node tools/verify-projector.js "$app" --platform darwin
               browser=$(find dist -maxdepth 8 -type d -path '*.app/Contents/Resources/vendor/flashbrowser/darwin-x64' | head -1)
               test -n "$browser" || { echo "FlashBrowser is missing from the package"; exit 1; }
-              node tools/verify-flash-browser.js "$browser" --target darwin-x64
+              node tools/verify-flash-browser.js "$browser" --target darwin-x64 || {
+                echo "What differs between vendor/ and the package (< vendor, > package):"
+                diff <(node tools/verify-flash-browser.js vendor/flashbrowser/darwin-x64 --list) \
+                     <(node tools/verify-flash-browser.js "$browser" --list) | head -60 || true
+                exit 1
+              }
               ;;
             win32)
               found=$(find dist -path '*unpacked*/resources/vendor/projector/win32/flashplayer_32_sa.exe' | head -1)
@@ -228,7 +233,12 @@ jobs:
               browser=$(find dist -type d -path '*unpacked*/resources/vendor/flashbrowser/win32-*' | head -1)
               if [ "${{ matrix.arch }}" = "x64" ]; then
                 test -n "$browser" || { echo "FlashBrowser is missing from the package"; exit 1; }
-                node tools/verify-flash-browser.js "$browser" --target win32-x64
+                node tools/verify-flash-browser.js "$browser" --target win32-x64 || {
+                  echo "What differs between vendor/ and the package (< vendor, > package):"
+                  diff <(node tools/verify-flash-browser.js vendor/flashbrowser/win32-x64 --list) \
+                       <(node tools/verify-flash-browser.js "$browser" --list) | head -60 || true
+                  exit 1
+                }
               else
                 test -z "$browser" || { echo "the ia32 package must not carry the x64 FlashBrowser ($browser)"; exit 1; }
               fi

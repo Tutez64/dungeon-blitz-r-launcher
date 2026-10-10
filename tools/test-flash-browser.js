@@ -23,7 +23,7 @@ const {
     prepareFlashBrowserLaunch,
     verifyFlashBrowser
 } = require('../lib/flashBrowser');
-const { writeExpected } = require('../lib/integrity');
+const { treeDigest, writeExpected } = require('../lib/integrity');
 const { createStateStore } = require('../lib/config');
 
 const ROOT = path.join(__dirname, '..');
@@ -155,6 +155,70 @@ function checkIntegrity(scratch) {
     console.log('[test-flash-browser] a changed, added-to or foreign FlashBrowser is refused: OK');
 }
 
+/**
+ * electron-builder's packaging copy is not a byte-for-byte mirror of vendor/: it drops empty
+ * folders (Electron.app has 53 empty .lproj locale folders), and a copier may turn symlinks into
+ * the files they point at. 1.2.2's first macOS build failed its own fingerprint check on that.
+ * The digest describes what runs -- files and their contents -- so both copies match, while a
+ * changed, added or removed file still does not.
+ */
+function checkPackagingCopies(scratch) {
+    if (process.platform === 'win32') {
+        // Creating symlinks needs a privilege CI's Windows runners may not have; the suite runs
+        // on Linux, and the case it pins is a macOS bundle.
+        console.log('[test-flash-browser] (skipped on Windows: symlinks) packaging copies keep the fingerprint');
+        return;
+    }
+    const original = path.join(scratch, 'bundle', 'Electron.app');
+    const framework = path.join(original, 'Contents', 'Frameworks', 'Electron Framework.framework');
+    write(path.join(framework, 'Versions', 'A', 'Electron Framework'), 'framework binary');
+    write(path.join(framework, 'Versions', 'A', 'Resources', 'Info.plist'), 'plist');
+    fs.symlinkSync('A', path.join(framework, 'Versions', 'Current'));
+    fs.symlinkSync('Versions/Current/Electron Framework', path.join(framework, 'Electron Framework'));
+    fs.symlinkSync('Versions/Current/Resources', path.join(framework, 'Resources'));
+    write(path.join(original, 'Contents', 'MacOS', 'Electron'), 'electron binary');
+    fs.mkdirSync(path.join(original, 'Contents', 'Resources', 'en.lproj'), { recursive: true });
+    fs.mkdirSync(path.join(original, 'Contents', 'Resources', 'de.lproj'), { recursive: true });
+    const expected = treeDigest(original);
+    assert.match(expected, /^[0-9a-f]{64}$/);
+
+    // A copy without the empty folders and with every link replaced by what it points at.
+    const flattened = path.join(scratch, 'flattened', 'Electron.app');
+    const copyDereferenced = (from, to) => {
+        const stat = fs.statSync(from);
+        if (stat.isDirectory()) {
+            const entries = fs.readdirSync(from);
+            if (!entries.length) {
+                return;
+            }
+            fs.mkdirSync(to, { recursive: true });
+            for (const entry of entries) {
+                copyDereferenced(path.join(from, entry), path.join(to, entry));
+            }
+            return;
+        }
+        fs.mkdirSync(path.dirname(to), { recursive: true });
+        fs.copyFileSync(from, to);
+    };
+    copyDereferenced(original, flattened);
+    assert.ok(!fs.existsSync(path.join(flattened, 'Contents', 'Resources', 'en.lproj')), 'the premise: empty folders are gone');
+    assert.ok(!fs.lstatSync(path.join(flattened, 'Contents', 'Frameworks', 'Electron Framework.framework', 'Versions', 'Current')).isSymbolicLink());
+    assert.strictEqual(treeDigest(flattened), expected, 'a packaging copy keeps the fingerprint');
+
+    fs.writeFileSync(path.join(flattened, 'Contents', 'MacOS', 'Electron'), 'patched');
+    assert.notStrictEqual(treeDigest(flattened), expected, 'a changed file in it still does not');
+    fs.writeFileSync(path.join(flattened, 'Contents', 'MacOS', 'Electron'), 'electron binary');
+    write(path.join(flattened, 'Contents', 'MacOS', 'inject.dylib'), 'x');
+    assert.notStrictEqual(treeDigest(flattened), expected, 'nor an added one');
+
+    // A link pointing back up the tree is recorded, not followed forever; a dangling one counts.
+    fs.symlinkSync('..', path.join(original, 'Contents', 'loop'));
+    assert.match(treeDigest(original), /^[0-9a-f]{64}$/, 'a link loop does not hang the check');
+    fs.symlinkSync('missing-target', path.join(original, 'Contents', 'dangling'));
+    assert.match(treeDigest(original), /^[0-9a-f]{64}$/);
+    console.log('[test-flash-browser] packaging copies keep the fingerprint; changes to them do not: OK');
+}
+
 function checkLockAndPackaging() {
     const lock = JSON.parse(fs.readFileSync(path.join(ROOT, 'flashbrowser.lock.json'), 'utf8'));
     assert.strictEqual(lock.flash, FLASH_VERSION, 'the lock and the launcher name the same plugin build');
@@ -214,6 +278,7 @@ function main() {
         checkLookup(scratch);
         checkLaunch();
         checkIntegrity(scratch);
+        checkPackagingCopies(scratch);
         checkLockAndPackaging();
         checkSavedEngine(scratch);
     } finally {
