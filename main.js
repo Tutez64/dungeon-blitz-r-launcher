@@ -14,7 +14,7 @@ const { GameHost } = require('./lib/gameHost');
 const { verifyProjector } = require('./lib/integrity');
 const { findProjector, findVendoredProjector, isChosenProjector, prepareLaunch, resolveSwfUrl } = require('./lib/projector');
 const { keepGameTitle } = require('./lib/windowTitle');
-const { compatibilitySwitches, describeWindows, unsupportedArchitectureMessage, unsupportedWindowsMessage } = require('./lib/windowsSupport');
+const { describeWindows, unsupportedArchitectureMessage, unsupportedWindowsMessage } = require('./lib/windowsSupport');
 const { PresenceBridge } = require('./lib/presence');
 const { SocialBridge } = require('./lib/social');
 const { createUpdateService } = require('./lib/update');
@@ -27,12 +27,9 @@ const {
     normalizeHttpUrl
 } = require('./lib/config');
 
-// Which Windows this is, read once at startup. Electron 11 is old enough to still run on
-// Windows 7 and 8, but Chromium 87 cannot trust the GPU on those machines: it asks for
-// D3D11, which only reaches Windows 7 through the platform update (KB4474419), and the
-// machines that still need this launcher most often do not have it. The result is a black
-// window rather than an error, so the switches below answer it before it is asked for.
-// lib/windowsSupport.js holds the rules and is tested without an Electron runtime.
+// Which Windows this is, read once at startup: Electron runs on Windows 10 and later only,
+// and an architecture there is no build of is refused by name. lib/windowsSupport.js holds
+// the rules and is tested without an Electron runtime.
 const windows = describeWindows();
 
 // One 256px PNG arms the window icon on every platform and the dock icon on Linux and
@@ -165,33 +162,6 @@ function findFlashPlayer() {
     }
 }
 
-/**
- * The switches a legacy Windows needs, applied before Chromium reads its command line.
- *
- * Scoped to Windows 7 and 8 deliberately: the same switches on Windows 10 would cost the
- * game real frames to work around a problem that machine does not have.
- * `DUNGEON_BLITZ_GPU=hardware` keeps the GPU on a legacy machine that has the platform
- * update, which is the one of those two answers a player can pick wrongly.
- */
-function applyWindowsCompatibility() {
-    const switches = compatibilitySwitches({ gpu: process.env.DUNGEON_BLITZ_GPU });
-
-    if (process.platform === 'win32') {
-        console.log(
-            `[Windows] ${windows.product}${windows.softwareRendering ? ' - legacy Windows, rendering in software' : ''}`
-        );
-    }
-
-    for (const { name, value } of switches) {
-        if (value) {
-            app.commandLine.appendSwitch(name, value);
-        } else {
-            app.commandLine.appendSwitch(name);
-        }
-        console.log(`[Windows] --${name}${value ? `=${value}` : ''}`);
-    }
-}
-
 function resolveSelectedServer() {
     const { servers, defaultServerId } = loadServers();
     const saved = state.read();
@@ -245,17 +215,18 @@ function refuseToStart() {
 }
 
 /**
- * A Windows the pinned runtime cannot run on. The same shape as the Flash-less refusal
- * below: name what is missing and quit, rather than leaving a player on a window whose game
- * can never load. On Windows 7 without the C runtime update there is nothing to show even
- * this -- the README says so instead.
+ * A Windows the runtime cannot run on. The same shape as the Flash-less refusal below: name
+ * what is missing and quit, rather than leaving a player on a window whose game can never
+ * load. Windows 7 and 8 mostly never get this far -- Electron itself fails to start there --
+ * so the README says so as well.
  */
 function refuseUnsupportedWindows() {
     console.error(`[Windows] Refusing to start: ${windows.reason}`);
 
-    // A 32-bit build is refused with its own text: the exact file to download is the whole
-    // of the answer there, and burying it under the Windows 7 requirements would send the
-    // player off to install service packs on a machine that was never the problem.
+    // A build for an architecture there is none of is refused with its own text: the exact
+    // file to download is the whole of the answer there, and burying it under the Windows
+    // version requirements would send the player off to upgrade a machine that was never
+    // the problem.
     //
     // The version names the installer exactly. A player who installed win-ia32 needs to
     // know which of the release's files replaces it, and the list is ordered against
@@ -326,20 +297,11 @@ function flashStatus() {
     };
 }
 
-/**
- * What this Windows is costing, for the window's status strip: on Windows 7 and 8 the game
- * runs on a software rasteriser, which is playable and visibly slower, and that should not
- * read as a fault in the launcher.
- */
+/** Which Windows this is, in the launcher state: what this machine is and what it can do. */
 function windowsStatus() {
     return {
         supported: Boolean(windows.supported),
         product: String(windows.product || ''),
-        legacy: Boolean(windows.legacy),
-        softwareRendering: Boolean(windows.softwareRendering),
-        // The 32-bit installers are refused on start, so the status strip is what a build
-        // that somehow got past that would read from. Kept because it is the same fact
-        // every other row is: what this machine is, and what it can do.
         architecture: String(windows.arch || ''),
         architectureSupported: Boolean(windows.architectureSupported),
         reason: String(windows.reason || ''),
@@ -453,7 +415,9 @@ function createLauncherWindow() {
             preload: path.join(LAUNCHER_ROOT, 'preload.js'),
             contextIsolation: true,
             nodeIntegration: false,
-            sandbox: false,
+            // preload.js needs nothing but contextBridge and ipcRenderer, both of which a
+            // sandboxed preload has.
+            sandbox: true,
             // The launcher shell hosts no plugins; the game runs in the standalone Flash Player.
             plugins: false,
             // No developer tools in an installed launcher: they are a console onto the IPC
@@ -537,8 +501,7 @@ async function launchProjector(serverUrl, settings) {
     }
 
     // A spawn that fails (a missing or non-executable file) leaves no pid and reports why
-    // as an 'error' on the next tick. Electron 11's Node 12 has no 'spawn' event to wait
-    // for instead.
+    // as an 'error' on the next tick.
     if (!child.pid) {
         const error = await new Promise((resolve) => child.once('error', resolve));
         return { ok: false, message: `Flash Player could not be started: ${(error && error.message) || error}` };
@@ -666,9 +629,8 @@ async function play(serverId) {
     return launched;
 }
 
-// Discord's consent screen is sent to the player's own browser, never rendered here:
-// discord.com's web app needs a modern engine, and this launcher is pinned to Chromium 87
-// for Flash. On 87 the page loads but its script fails to parse and the body stays empty.
+// Discord's consent screen is sent to the player's own browser, never rendered here: the
+// launcher window shows only its own page and loads no remote content at all.
 //
 // Nothing is lost by leaving: the server keys a pending login by requester address, so the
 // launcher's poll sees the sign-in the player completed in their browser.
@@ -1072,8 +1034,10 @@ function registerIpc() {
  * Whether an installed launcher was started to be inspected or instrumented: a Node or
  * Chromium debugger, or NODE_OPTIONS loading code ahead of the launcher's own.
  *
- * Electron 11 cannot switch these off at the binary level (that needs Electron's fuses,
- * which arrived in 12), so the launcher checks for them itself and refuses to run. A
+ * The build's Electron fuses (package.json build.electronFuses) already switch off the Node
+ * --inspect flags, NODE_OPTIONS and ELECTRON_RUN_AS_NODE in the binary. This check stays as
+ * a second line: it also covers the Chromium switches no fuse governs
+ * (--remote-debugging-port, --js-flags), and a binary whose fuses were flipped back. A
  * development checkout is never refused.
  */
 function instrumentationDetected() {
@@ -1110,9 +1074,9 @@ app.on('web-contents-created', (_event, contents) => {
         event.preventDefault();
         openExternal(url);
     });
-    contents.on('new-window', (event, url) => {
-        event.preventDefault();
+    contents.setWindowOpenHandler(({ url }) => {
         openExternal(url);
+        return { action: 'deny' };
     });
     contents.on('will-attach-webview', (event) => event.preventDefault());
     if (app.isPackaged) {
@@ -1143,7 +1107,6 @@ if (instrumentation) {
         }
     });
 
-    applyWindowsCompatibility();
     findFlashPlayer();
     restoreDiscordLogin();
     installLocation = inspectInstallLocation({ isPackaged: app.isPackaged, appPath: app.getAppPath() });
@@ -1170,7 +1133,7 @@ if (instrumentation) {
 
     app.whenReady().then(() => {
         // Checked before the Flash guard because nothing below it can matter on a Windows
-        // the pinned runtime cannot run on at all.
+        // the runtime cannot run on at all.
         if (!windows.supported) {
             refuseUnsupportedWindows();
             return;

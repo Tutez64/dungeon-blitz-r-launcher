@@ -150,9 +150,20 @@ all of this.
     `changed - reinstall`, and the game does not start.
 - **No developer tools.** The launcher window has DevTools switched off, and any DevTools
   that open are closed again.
+- **Electron fuses.** The build sets Electron's fuses (`build.electronFuses` in
+  `package.json`), switches baked into the packaged Electron binary:
+  - `ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS` and the Node `--inspect` flags are ignored, so
+    the launcher binary cannot be used as a plain Node runtime or started with injected code.
+  - The app loads only from its `app.asar`, never from an `app` folder placed beside it.
+  - On macOS and Windows, Electron checks `app.asar` against a hash recorded in the app
+    (`Info.plist` on macOS, the executable's resources on Windows) and refuses to start if
+    the archive was edited. Linux has no such check.
+  - Cookie encryption is left off: the launcher keeps no cookies, and on an unsigned macOS
+    build it would ask for Keychain access after every update.
 - **No debugging or injected code.** A launcher started with a debugger (`--inspect`,
   `--remote-debugging-port`, `--js-flags`) or with `NODE_OPTIONS` loading code exits at
-  start.
+  start. The fuses already block the Node flags; this check also covers the Chromium
+  switches no fuse controls.
 - **The window stays on its own page.** No page can navigate the launcher window
   elsewhere, open a new window or embed a webview. Links go to the system browser.
 - **CI checks the shipped copy.** The release workflow runs `tools/verify-projector.js` on
@@ -162,12 +173,10 @@ all of this.
 **What this cannot stop.** Nothing running on the player's own machine can be made
 impossible to manipulate; these checks raise the cost of doing it. In particular:
 
-- **Patching the launcher's code.** Someone can edit the launcher's code and the
-  fingerprint together. Electron 11 cannot verify its own `app.asar`. That check
-  (`EnableEmbeddedAsarIntegrityValidation`) and the switches that disable
-  `ELECTRON_RUN_AS_NODE` and `NODE_OPTIONS` at the binary level are Electron *fuses*.
-  Fuses arrived in Electron 12; asar integrity checking came later still (macOS 16,
-  Windows 30). Getting them means leaving Electron 11, which drops Windows 7 and 8.
+- **Patching the launcher's code.** The `app.asar` hash lives inside the app itself, so
+  someone who edits the code can record a new hash too. Only code signing makes that
+  edit show: a signed app whose `app.asar` or `Info.plist` changes fails its signature
+  check. On Linux there is no `app.asar` check at all.
 - **Unsigned installers.** Installers are unsigned unless the studio's certificates are
   configured (`CSC_LINK`, `CSC_KEY_PASSWORD`, and Apple notarization). Signing is what makes
   a modified installer show as untrusted to the player.
@@ -175,16 +184,17 @@ impossible to manipulate; these checks raise the cost of doing it. In particular
   What the game accepts is decided by the server: `src/server/core/anticheat` in the game
   repository.
 
-## Why Electron 11
+## Electron version
 
-The launcher window still runs on Electron 11 (Chromium 87), which runs on Windows 7 and 8;
-Electron dropped those in version 23. The pin used to be about Flash too: Chromium 87 was the
-last with the PPAPI Flash host. The game no longer depends on it, so moving to a newer
-Electron is now a question of which Windows versions to keep.
+The launcher window runs on Electron 41. It used to be pinned to Electron 11 (Chromium 87),
+first because Chromium 87 was the last with the PPAPI Flash host, and later to keep Windows 7
+and 8 running. The game no longer needs the Flash host, and Electron 11 had stopped getting
+security fixes, so the launcher moved to a supported Electron and gave up Windows 7, 8 and
+8.1, which Electron dropped in version 23.
 
-The same pin is why Discord's consent screen is opened in the player's own browser rather
-than inside the app: discord.com's web client no longer parses on Chromium 87. The server
-keys a pending sign-in by requester address, so the launcher's poll still sees the result.
+Discord's consent screen still opens in the player's own browser rather than inside the app,
+because the launcher window loads no remote content. The server keys a pending sign-in by
+requester address, so the launcher's poll still sees the result.
 
 ## Binaries: `payload/` and `vendor/`
 
@@ -201,7 +211,8 @@ vendor/social/<platform>/     discord_social_bridge[.exe] + the SDK runtime libr
 ### macOS is x64 only
 
 The package is an x64 Electron app, and Flash Player for macOS is an Intel binary. Apple
-Silicon runs both under Rosetta, and CI builds on the Intel runner.
+Silicon runs both under Rosetta, and CI builds on the Intel runner. Electron needs macOS 12
+(Monterey) or later.
 
 ### 32-bit Windows
 
@@ -221,37 +232,44 @@ by downloading the new ia32 installer.
 
 ### Windows versions
 
-Electron 11 is old enough to still run on Windows 7: Electron only dropped Windows 7, 8 and
-8.1 in version 23. So the launcher starts on every Windows from 7 Service Pack 1 up, 32-bit
-or 64-bit:
+Electron runs on Windows 10 and later only: it dropped Windows 7, 8 and 8.1 in version 23.
+The launcher starts on Windows 10 and Windows 11, 32-bit or 64-bit:
 
 | Windows | Result |
 | --- | --- |
-| Windows 7 SP1 | supported; the launcher window renders in software |
-| Windows 8, Windows 8.1 | supported; the launcher window renders in software |
-| Windows 10 and later | supported, hardware rendering |
-| Windows Vista and older | refused at start, naming what is needed |
+| Windows 10 and later | supported |
+| Windows 8.1 and older | not supported |
 
-The software rendering applies to the launcher window only. The game runs in Flash Player,
-which does its own rendering.
+On Windows 7 and 8 Electron itself fails to start, usually before any launcher code runs.
+Anything that does get that far is refused by name (`lib/windowsSupport.js`), with a dialog
+that says Windows 10 is needed. Players on those machines can keep an older launcher build
+(1.1.0 or earlier, on Electron 11), but it no longer gets updates.
+`node tools/test-windows-support.js` walks the whole matrix from any machine:
+`os.release()` is a parameter, not a call.
 
-**Windows 7 needs the Universal C Runtime update.** Electron's binaries link against
-`ucrtbase.dll`, which Windows 7 and 8 carry only through **KB2999226** (or the earlier
-**KB2533623**). Without it the launcher does not start at all -- no window, no message, no
-error box -- so install it before the first run.
+The setup installers refuse Windows 7, 8 and 8.1 too, before they touch anything
+(`build/installer.nsh`, wired in through `build.nsis.include`). That matters for launchers
+already installed there. 1.1.0 still auto-updates (electron-updater 4.3.9, download in the
+background, install on quit), and without the check it would replace itself with a
+launcher that cannot start. Here is what a Windows 7/8 player on 1.1.0 sees once a
+Windows 10-only release is published:
 
-**The GPU is the other half.** Chromium 87 asks for D3D11, which reaches Windows 7 through
-the platform update (**KB4474419**). Without it -- and on the netbooks and VMs where this
-launcher is most wanted -- the window is black or the GPU process dies during start, which
-never says which driver is at fault. `lib/windowsSupport.js` therefore switches Windows 7
-and 8 to software rendering (`--use-gl=swiftshader --disable-gpu-compositing`) before the
-first window is created, and **leaves Windows 10 alone**: the same switches there would cost
-the launcher window real frames for a problem that machine does not have. A legacy machine that does
-have the platform update can keep the GPU with `DUNGEON_BLITZ_GPU=hardware`.
+- The status strip shows the download as usual (`downloading 1.x.y - 42%`, then `1.x.y
+  ready - restart to install`). 1.1.0 cannot tell that the release will not run there.
+- **Restart to update** closes the launcher and opens the installer, which shows *"Dungeon
+  Blitz R 1.x.y needs Windows 10 or later. Nothing was installed or changed"* and exits. The
+  launcher does not reopen on its own: the player starts 1.1.0 again from the Start menu or
+  the desktop shortcut.
+- Quitting without clicking runs the same installer silently (`/S`). It exits at once and
+  nothing is shown or changed.
+- Each later start is still 1.1.0. It finds the same release, already downloaded, so it
+  says `ready - restart to install` again, and that stays true for every later release.
+  The prompt is harmless, but 1.1.0 has no setting to hide it.
 
-The status strip carries a `Windows` row saying which of these is in force, so a slower
-launcher window on Windows 7 is not read as a fault. `node tools/test-windows-support.js`
-walks the whole matrix from any machine -- `os.release()` is a parameter, not a call.
+Running a new `-setup.exe` by hand on those systems gives the same dialog. The portable
+`.exe` has no installer and no check, so on Windows 7/8 it just fails to start, like
+Electron does. The release notes also say Windows 10 is needed (`body` in the release
+job), so a player who checks the releases page finds out before downloading.
 
 ## Discord rich presence
 
@@ -264,10 +282,10 @@ game server's `/api/presence/discord-join`.
 
 That endpoint is the same one the game server's own bridge exposes, so the page needs no
 changes. The launcher does it itself because a packaged build cannot use the server's
-bridge at all: the server checkout is not inside the app, and the only Node runtime a
-packaged Electron carries is v12 (Electron 11), which cannot load that bridge's
-dependencies (express 5 needs Node 18 and `node:`-prefixed builtins). It used to be spawned
-with its output discarded, so it died silently and presence never appeared.
+bridge at all: the server checkout is not inside the app. On Electron 11 the bridge also
+could not load its dependencies (express 5 needs Node 18 and `node:`-prefixed builtins,
+and Electron 11 carried Node 12). It used to be spawned with its output discarded, so it
+died silently and presence never appeared.
 
 Area artwork comes from `LEVEL_AREA_IMAGE_KEYS` in `lib/presence.js`: the key the game page
 pushes (`areaKey`, else `levelKey`) is matched against the Rich Presence assets uploaded to
@@ -593,6 +611,12 @@ And on macOS an update can only replace a signed app: these unsigned builds show
 check as an error there, so macOS players update by downloading the new .dmg. `npm run
 test-updater` pins the state machine against a fake updater, no Electron or network.
 
+On Windows the update is the NSIS setup installer. electron-updater runs it with
+`--updated --force-run` after **Restart to update** and with `--updated /S` on quit. That
+installer refuses Windows 7, 8 and 8.1 before it uninstalls anything, so a 1.1.0 launcher
+there keeps working. It just keeps offering the update. "Windows versions" above describes
+what that player sees.
+
 ## Servers
 
 Targets live in `servers.json`. There is no server picker in the UI; the launcher uses the
@@ -622,7 +646,7 @@ drives the module against a local mock.
 | `tools/test-discord-ipc.js` | The RPC framing, `AUTHORIZE` payload and PING/PONG |
 | `tools/test-launcher-status.js` | Every state of the status strip and the account row |
 | `tools/test-install-location.js` | Disk-image and Downloads detection, and what is deliberately not flagged |
-| `tools/test-windows-support.js` | Which Windows versions and architectures start, and the software-rendering fallback |
+| `tools/test-windows-support.js` | Which Windows versions and architectures start, and how the others are refused |
 | `tools/test-projector.js` | Finding Flash Player, the SWF it opens, the pinned downloads, and the presence and region-latency work done for the game page |
 
 `.github/workflows/tests.yml` runs them on every push and pull request, so a broken Flash
@@ -646,8 +670,8 @@ game.
 
 ## Security notes
 
-- The launcher shell runs with `contextIsolation: true`, `nodeIntegration: false` and
-  plugins disabled; its only contact with the main process is the fixed set of IPC calls in
+- The launcher shell runs sandboxed, with `contextIsolation: true`,
+  `nodeIntegration: false` and plugins disabled; its only contact with the main process is the fixed set of IPC calls in
   `preload.js` (state, sign-in, forget, play, choose Flash Player, move to Applications,
   relaunch, quit) and it loads no remote content at all.
 - No window of the launcher hosts Flash. The game runs in Adobe's standalone Flash Player,

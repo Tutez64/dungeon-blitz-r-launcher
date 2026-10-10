@@ -132,8 +132,6 @@ function baseState(flash, social, extra = {}) {
         windows: extra.windows || {
             supported: true,
             product: 'Windows 10 or later',
-            legacy: false,
-            softwareRendering: false,
             reason: '',
             requirements: ''
         },
