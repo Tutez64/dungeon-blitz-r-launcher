@@ -11,14 +11,17 @@ public static class W {
 }
 "@
 $target = [uint32]$procId
+$script:lines = New-Object System.Collections.Generic.List[string]
 [W]::EnumWindows({ param($h, $l)
   $p = 0; [void][W]::GetWindowThreadProcessId($h, [ref]$p)
   if ($p -eq $target) {
     $t = New-Object System.Text.StringBuilder 512; [void][W]::GetWindowText($h, $t, 512)
     $c = New-Object System.Text.StringBuilder 256; [void][W]::GetClassName($h, $c, 256)
-    "[$label] hwnd=$h visible=$([W]::IsWindowVisible($h)) class=$c title=$t"
+    $script:lines.Add("[$label] hwnd=$h visible=$([W]::IsWindowVisible($h)) class=$c title=$t")
   }
   $true }, [IntPtr]::Zero) | Out-Null
+$script:lines
+"[$label] windows found: $($script:lines.Count)"
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height

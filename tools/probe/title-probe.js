@@ -31,13 +31,14 @@ function helper(kind, pid, label) {
     }
 }
 
-async function run(label, target, { retitle = false } = {}) {
+async function run(label, target, { retitle = false, cwd } = {}) {
     const projector = findProjector({ vendorOnly: true });
     const { command } = projectorCommand(projector, target);
-    console.log(`\n=== ${label}: ${command} ${target}`);
-    const child = spawn(command, [target], { stdio: 'ignore' });
+    console.log(`\n=== ${label}: ${command} ${target}${cwd ? ` (cwd ${cwd})` : ''}`);
+    const child = spawn(command, [target], { stdio: 'ignore', cwd });
     await sleep(25000);
     helper('titles', child.pid, label);
+    helper('network', child.pid, label);
     if (retitle) {
         helper('retitle', child.pid, label);
         await sleep(3000);
@@ -66,6 +67,9 @@ async function run(label, target, { retitle = false } = {}) {
     if (platform !== 'win32') {
         const colon = path.join(loaderDir, 'Dungeon Blitz: R');
         fs.writeFileSync(colon, buildLoaderSwf(swfUrl));
-        await run('loader-colon-noext', colon);
+        // The bare name, run from its own folder: the title is the argument as given.
+        await run('loader-bare-name', 'Dungeon Blitz: R', { cwd: loaderDir });
+    } else {
+        await run('loader-bare-name', 'Dungeon Blitz R.swf', { cwd: loaderDir, retitle: true });
     }
 })();

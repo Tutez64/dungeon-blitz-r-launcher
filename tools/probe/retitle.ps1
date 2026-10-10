@@ -10,7 +10,10 @@ public static class R {
 }
 "@
 $target = [uint32]$procId
+$script:lines = New-Object System.Collections.Generic.List[string]
 [R]::EnumWindows({ param($h, $l)
   $p = 0; [void][R]::GetWindowThreadProcessId($h, [ref]$p)
-  if ($p -eq $target -and [R]::IsWindowVisible($h)) { "[$label] SetWindowText $h -> $([R]::SetWindowText($h, 'Dungeon Blitz: R'))" }
+  if ($p -eq $target -and [R]::IsWindowVisible($h)) { $script:lines.Add("[$label] SetWindowText $h -> $([R]::SetWindowText($h, 'Dungeon Blitz: R'))") }
   $true }, [IntPtr]::Zero) | Out-Null
+$script:lines
+"[$label] windows found: $($script:lines.Count)"
