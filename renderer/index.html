@@ -40,6 +40,13 @@
       </button>
       <button id="play" type="button" class="db-play">Open the game</button>
 
+      <!-- The second engine: Adobe's standalone Flash Player, for players who see a delay
+           collecting loot in FlashBrowser. Shown only where FlashBrowser is the first. -->
+      <div id="alt-engine" class="alt-engine" hidden>
+        <button id="play-projector" type="button" class="db-play-alt">Open in Flash Player</button>
+        <span class="alt-engine__hint">Delay collecting loot? Play with this one.</span>
+      </div>
+
       <!-- Signing in is a one-time thing: once an account is known the button is replaced by
            it, whether the sign-in happened here or inside the game. -->
       <div id="account" class="account" hidden>

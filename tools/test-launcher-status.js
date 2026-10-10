@@ -62,6 +62,8 @@ function loadRenderer() {
     };
 
     let render = null;
+    // Which engine each press of a play button asked for.
+    const plays = [];
     const window = {
         launcher: {
             onState: (handler) => {
@@ -69,7 +71,10 @@ function loadRenderer() {
             },
             // The test drives render() itself, so the initial fetch never settles.
             getState: () => new Promise(() => {}),
-            play: async () => ({ ok: true }),
+            play: async (engine) => {
+                plays.push(engine);
+                return { ok: true };
+            },
             discordLogin: async () => ({ ok: true }),
             forgetDiscordLogin: async () => null,
             browseFlash: async () => null,
@@ -84,7 +89,7 @@ function loadRenderer() {
     vm.runInNewContext(source, { document, window, console });
 
     assert.ok(render, 'renderer.js must register a state handler');
-    return { render, registry };
+    return { render, registry, plays };
 }
 
 function rowsFrom(registry) {
@@ -108,7 +113,9 @@ function baseState(flash, social, extra = {}) {
         selectedServerUrl: 'http://example.test/',
         serverReachable: true,
         gameRunning: false,
+        gameEngine: extra.gameEngine || '',
         flash,
+        flashBrowser: extra.flashBrowser,
         social,
         presence: extra.presence || {
             running: false,
@@ -160,6 +167,8 @@ const MISSING_FLASH = {
     archMismatch: false
 };
 
+const READY_BROWSER = { offered: true, found: true, ready: true, locked: true, tampered: false, missing: [] };
+
 const IDLE_SOCIAL = {
     enabled: true,
     running: false,
@@ -169,8 +178,67 @@ const IDLE_SOCIAL = {
     lastStatus: ''
 };
 
-function main() {
-    const { render, registry } = loadRenderer();
+/** The two play buttons: FlashBrowser first wherever there is one, Flash Player second. */
+async function checkPlayButtons(render, registry, plays) {
+    const press = async (id) => {
+        await registry.get(id).listeners.click();
+        // playWith() awaits the play() call; let it settle.
+        await new Promise((resolve) => setImmediate(resolve));
+    };
+
+    // Windows x64 and macOS: FlashBrowser is the main button, Flash Player the second one.
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: READY_BROWSER }));
+    assert.strictEqual(registry.get('play').disabled, false, 'FlashBrowser can be started');
+    assert.strictEqual(registry.get('alt-engine').hidden, false, 'the Flash Player button is offered next to it');
+    assert.strictEqual(registry.get('play-projector').disabled, false);
+    assert.strictEqual(registry.get('problem').hidden, true);
+    plays.length = 0;
+    await press('play');
+    await press('play-projector');
+    assert.deepStrictEqual(plays, ['flashbrowser', 'projector'], 'each button starts its own engine');
+
+    // 32-bit Windows and Linux have no FlashBrowser: one button, and it plays in Flash Player.
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: { offered: false, found: false, ready: false, missing: [] } }));
+    assert.strictEqual(registry.get('alt-engine').hidden, true, 'no second button without FlashBrowser');
+    assert.strictEqual(registry.get('play').disabled, false);
+    plays.length = 0;
+    await press('play');
+    assert.deepStrictEqual(plays, ['projector'], 'the only button plays in Flash Player');
+
+    // An install whose FlashBrowser is gone: said in the banner, and Flash Player still plays.
+    render(
+        baseState(ARMED_FLASH, IDLE_SOCIAL, {
+            flashBrowser: { offered: true, found: false, ready: false, locked: true, tampered: false, missing: [] }
+        })
+    );
+    assert.strictEqual(registry.get('play').disabled, true, 'a missing FlashBrowser cannot be started');
+    assert.strictEqual(registry.get('play-projector').disabled, false, 'Flash Player still can');
+    assert.ok(registry.get('problem').textContent.includes('FlashBrowser is missing'), registry.get('problem').textContent);
+    assert.ok(registry.get('problem').textContent.includes('Flash Player'), 'the banner points at the other button');
+
+    // A FlashBrowser changed after installation is refused, the same as a changed Flash Player.
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: { ...READY_BROWSER, ready: false, tampered: true } }));
+    assert.strictEqual(registry.get('play').disabled, true);
+    assert.ok(registry.get('problem').textContent.includes('changed after installation'));
+    assert.strictEqual(registry.get('problem').className, 'problem bad');
+
+    // A broken Flash Player leaves FlashBrowser playable.
+    render(baseState({ ...ARMED_FLASH, armed: false, locked: true, tampered: true }, IDLE_SOCIAL, { flashBrowser: READY_BROWSER }));
+    assert.strictEqual(registry.get('play').disabled, false);
+    assert.strictEqual(registry.get('play-projector').disabled, true);
+
+    // Which engine the game is running in shows in the status line.
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: READY_BROWSER }));
+    render({ ...baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: READY_BROWSER, gameEngine: 'projector' }), gameRunning: true });
+    assert.strictEqual(registry.get('status').textContent, 'The game is running in Flash Player.');
+    render({ ...baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: READY_BROWSER, gameEngine: 'flashbrowser' }), gameRunning: true });
+    assert.strictEqual(registry.get('status').textContent, 'The game is running.');
+
+    console.log('[test-launcher-status] FlashBrowser is the main button and Flash Player the second: OK');
+}
+
+async function main() {
+    const { render, registry, plays } = loadRenderer();
 
     // Armed plugin, Discord reached, lobby chat connected, chat mirror running.
     render(
@@ -393,7 +461,12 @@ function main() {
     assert.strictEqual(registry.get('move-app').hidden, true);
 
     console.log('[test-launcher-status] status rows and the account row render correctly in every state');
+
+    await checkPlayButtons(render, registry, plays);
     console.log('[test-launcher-status] all assertions passed');
 }
 
-main();
+main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+});
