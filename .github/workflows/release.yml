@@ -81,9 +81,9 @@ jobs:
             # produced BOTH (plus the universal) instead of replacing it.
             builder_args: --win nsis:x64 portable:x64
             publish_mode: always
-          # The 32-bit installers, which install and open but cannot play: the only Flash
-          # plugin this project vendors is x86_64. Documented in the README, and
-          # tools/preflight.js says so on this run rather than shipping it silently.
+          # The 32-bit installers. They play: the game runs in flashplayer_32_sa.exe, a
+          # 32-bit program in its own process. They never publish an update manifest --
+          # see "Drop the ia32 update manifest" below.
           - os: windows-latest
             platform: win32
             arch: ia32
@@ -91,18 +91,16 @@ jobs:
             # The per-target `name:arch` suffix is what pins this run to ia32 alone.
             builder_args: --win nsis:ia32 portable:ia32
             publish_mode: never
-          # An Intel runner, because the last Flash plugin is x86_64 and a PPAPI plugin
-          # must match the architecture of the process hosting it. macos-13 was retired,
-          # and a retired label does not fail -- the job simply queues forever.
+          # An Intel runner: the package is x64 (Apple Silicon runs it, and Flash Player, which
+          # is Intel-only, under Rosetta). macos-13 was retired, and a retired label does not
+          # fail -- the job simply queues forever.
           - os: macos-15-intel
             platform: darwin
             label: macOS
             builder_args: --mac
             publish_mode: always
-          # Linux is allowed to fail: payload/flash/linux/ has never been committed, so the
-          # preflight rightly refuses it, and one missing platform must not stop the
-          # Windows and macOS installers from publishing. Its absence is visible in the
-          # run page rather than silent.
+          # Linux is allowed to fail so that one platform cannot stop the Windows and macOS
+          # installers from publishing; a failure is still visible on the run page.
           - os: ubuntu-22.04
             platform: linux
             label: Linux
@@ -114,7 +112,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # payload/ holds the Flash plugin and the prebuilt bridges.
+          # payload/ holds the prebuilt Discord bridges.
           lfs: true
 
       - name: Set up Node
@@ -146,10 +144,17 @@ jobs:
         shell: bash
         run: node tools/stage-vendor.js --platform ${{ matrix.platform }} --bridge-build native_bridge/build
 
+      - name: Fetch Flash Player
+        shell: bash
+        # Adobe's standalone Flash Player (flashplayer_32_sa) is the game engine. It is not
+        # in the repository: it is downloaded from Adobe's update server (the Internet
+        # Archive's copy as the fallback) and checked against projector.lock.json.
+        run: node tools/fetch-projector.js --platform ${{ matrix.platform }}
+
       - name: Install dependencies
         run: npm ci
 
-      - name: Check Flash plugin
+      - name: Check Flash Player
         shell: bash
         # --arch matters for Windows: the two runs package different architectures, so the
         # check has to be against the one this entry builds. Same reason the local
@@ -188,6 +193,30 @@ jobs:
             ls -la dist/latest*.yml || echo "(this run produced no update manifest)"
             rm -f dist/latest.yml dist/latest-ia32.yml
           fi
+
+      - name: Check Flash Player made it into the package
+        shell: bash
+        # The installers are only worth shipping if the player inside them is intact: on
+        # macOS that means Adobe's signature still verifies after packaging.
+        run: |
+          case "${{ matrix.platform }}" in
+            darwin)
+              app=$(find dist -maxdepth 8 -path '*.app/Contents/Resources/vendor/projector/darwin/Flash Player.app' | head -1)
+              test -n "$app" || { echo "Flash Player.app is missing from the package"; exit 1; }
+              codesign --verify --deep --strict --verbose=2 "$app"
+              ;;
+            win32)
+              found=$(find dist -path '*unpacked*/resources/vendor/projector/win32/flashplayer_32_sa.exe' | head -1)
+              test -n "$found" || { echo "flashplayer_32_sa.exe is missing from the package"; exit 1; }
+              ls -la "$found"
+              ;;
+            linux)
+              found=$(find dist -path '*unpacked/resources/vendor/projector/linux/flashplayer' | head -1)
+              test -n "$found" || { echo "flashplayer is missing from the package"; exit 1; }
+              test -x "$found" || { echo "flashplayer is not executable in the package"; exit 1; }
+              ls -la "$found"
+              ;;
+          esac
 
       - name: List what was built
         shell: bash

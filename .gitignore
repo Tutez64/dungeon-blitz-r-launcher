@@ -1,8 +1,7 @@
 node_modules/
 dist/
 vendor/
-# Root-anchored: an unanchored `flash/` would also swallow payload/flash/.
-/flash/
+# A checkout's own drop point for the standalone Flash Player (see lib/projector.js).
 /projector/
 .DS_Store
 

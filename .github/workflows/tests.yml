@@ -22,8 +22,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # The suites drive modules directly and never read the Flash plugin or the
-          # prebuilt bridges, so pulling ~80 MB of LFS objects buys nothing here.
+          # The suites drive modules directly and never read Flash Player or the
+          # prebuilt bridges, so pulling the LFS objects buys nothing here.
           lfs: false
 
       - name: Set up Node

@@ -10,9 +10,8 @@ const { GameStats } = require('./lib/gameStats');
 const { createLauncherSessionRecovery } = require('./lib/launcherSessionRecovery');
 const discordAuth = require('./lib/discordAuth');
 const { exists, inspectInstallLocation, isWritableDirectory } = require('./lib/install');
-const { findFlashPlugin, findVendoredPlugin } = require('./lib/flash');
 const { GameHost } = require('./lib/gameHost');
-const { findProjector, isChosenProjector, projectorCommand, resolveSwfUrl } = require('./lib/projector');
+const { findProjector, findVendoredProjector, isChosenProjector, projectorCommand, resolveSwfUrl } = require('./lib/projector');
 const { compatibilitySwitches, describeWindows, unsupportedArchitectureMessage, unsupportedWindowsMessage } = require('./lib/windowsSupport');
 const { PresenceBridge } = require('./lib/presence');
 const { SocialBridge } = require('./lib/social');
@@ -23,12 +22,8 @@ const {
     createStateStore,
     loadLauncherConfig,
     loadServers,
-    normalizeHttpUrl,
-    originOf
+    normalizeHttpUrl
 } = require('./lib/config');
-
-const GAME_WINDOW_DEFAULTS = { width: 1200, height: 800, minWidth: 800, minHeight: 600 };
-const BACKGROUND_COLOR = '#484955';
 
 // Which Windows this is, read once at startup. Electron 11 is old enough to still run on
 // Windows 7 and 8, but Chromium 87 cannot trust the GPU on those machines: it asks for
@@ -94,14 +89,10 @@ gameStats.on('state', () => pushState());
 const gameHost = new GameHost({ presence });
 
 let launcherWindow = null;
-let gameWindow = null;
-// The standalone Flash Player running the game, when that is the engine.
+// The standalone Flash Player running the game.
 let gameProcess = null;
 let loginWatcher = null;
-let flashPlugin = null;
-let flashArmed = false;
 let projector = null;
-let currentGameOrigin = '';
 let discordAccount = { linked: false, email: '', name: '' };
 let remembered = false;
 let serverReachable = null;
@@ -109,75 +100,44 @@ let serverReachable = null;
 // nobody will notice going stale.
 let installLocation = { relocate: false, reason: '', bundlePath: '', targetPath: '', message: '' };
 
-function locateFlash(preferredPath) {
-    return findFlashPlugin({
-        preferredPath,
-        // A gitignored src/launcher/flash/ is a second drop point for anyone who would
-        // rather not run tools/extract-flash.js.
-        extraDirectories: [path.join(LAUNCHER_ROOT, 'flash')]
-    });
-}
-
 function locateProjector(preferredPath) {
     return findProjector({
         preferredPath,
-        // The same gitignored drop point as the plugin's, for a checkout.
+        // A gitignored projector/ at the repository root is a drop point for a checkout that
+        // would rather not run tools/fetch-projector.js.
         extraDirectories: [path.join(LAUNCHER_ROOT, 'projector')]
     });
 }
 
 /**
- * What runs the game: 'projector' (Adobe's standalone Flash Player, its own process and
- * window) whenever one is usable, else 'plugin' (the PPAPI plugin inside a Chromium 87
- * window), else '' when neither is. DUNGEON_BLITZ_ENGINE=plugin forces the old engine,
- * which is how the two are compared on one machine.
+ * Whether the game can be started: there is a standalone Flash Player this machine can
+ * run. The projector is the game engine -- Adobe's own Flash Player, in its own process and
+ * window -- and the only one; the PPAPI plugin inside Chromium it replaced is gone.
  */
-function gameEngine() {
-    if (process.env.DUNGEON_BLITZ_ENGINE !== 'plugin' && projector && !projector.archMismatch) {
-        return 'projector';
-    }
-    return flashArmed ? 'plugin' : '';
+function projectorReady() {
+    return Boolean(projector && !projector.archMismatch);
 }
 
 function gameRunning() {
-    return Boolean((gameWindow && !gameWindow.isDestroyed()) || gameProcess);
+    return Boolean(gameProcess);
 }
 
-// Chromium reads the plugin switches once, while it starts up -- after that the path is
-// frozen for the life of the process. A player who points at a different plugin therefore
-// gets a relaunch rather than a silently ignored setting. The plugin stays armed even when
-// the projector is the engine: it is the fallback if the projector goes missing.
-function armFlash() {
+// The projector is found once at startup and again whenever the player picks one by hand.
+// It is started fresh for every game, so a new choice applies on the next play.
+function findFlashPlayer() {
     projector = locateProjector(state.read().projectorPath);
-    if (projector) {
-        console.log(
-            `[Flash] Engine: ${projector.source} standalone Flash Player ${projector.version || '(version unknown)'} at ${projector.path}`
-        );
-        if (projector.archMismatch) {
-            console.log(`[Flash] WARNING: the projector is ${projector.architectures.join('/')} and cannot run on this machine.`);
-        }
-    } else {
-        console.log('[Flash] No standalone Flash Player found; the game runs on the PPAPI plugin.');
-    }
-
-    flashPlugin = locateFlash(state.read().flashPath);
-    if (!flashPlugin) {
-        flashArmed = false;
-        console.log('[Flash] No Flash plugin found; the launcher will ask for one.');
+    if (!projector) {
+        console.log('[Flash] No standalone Flash Player found; the launcher will ask for one.');
         return;
     }
 
-    app.commandLine.appendSwitch('ppapi-flash-path', flashPlugin.path);
-    app.commandLine.appendSwitch('ppapi-flash-version', flashPlugin.version);
-    flashArmed = true;
-
     // The same status the launcher window renders, on the console: the quickest way to
-    // tell a missing plugin from a copy built before the plugin was vendored.
-    console.log(`[Flash] Armed ${flashPlugin.source} plugin ${flashPlugin.version} at ${flashPlugin.path}`);
-    if (flashPlugin.archMismatch) {
-        console.log(
-            `[Flash] WARNING: the plugin is ${flashPlugin.architectures.join('/')} and this launcher runs as ${process.arch}; Flash cannot load.`
-        );
+    // tell a missing Flash Player from a copy built before it was vendored.
+    console.log(
+        `[Flash] ${projector.source} Flash Player ${projector.version || '(version unknown)'} at ${projector.path}`
+    );
+    if (projector.archMismatch) {
+        console.log(`[Flash] WARNING: Flash Player is ${projector.architectures.join('/')} and cannot run on this machine.`);
     }
 }
 
@@ -221,25 +181,25 @@ function resolveSelectedServer() {
 }
 
 /**
- * A packaged launcher always carries its own Flash plugin. One that does not is an
+ * A packaged launcher always carries its own Flash Player. One that does not is an
  * incomplete build -- a stale install, or a package assembled without running
- * tools/extract-flash -- and it can never play unless the player happens to have their
- * own Flash install. Refusing to start says so outright instead of leaving players on a
- * sign-in screen that leads nowhere.
+ * tools/fetch-projector -- and it can never play unless the player happens to have a
+ * Flash Player of their own. Refusing to start says so outright instead of leaving players
+ * on a sign-in screen that leads nowhere.
  *
- * A development checkout is exempt: there, a missing plugin is one `npm run extract-flash`
- * away and the window already explains it. DUNGEON_BLITZ_ALLOW_NO_FLASH=1 keeps a
- * deliberately Flash-less build startable.
+ * A development checkout is exempt: there, a missing Flash Player is one
+ * `npm run fetch-projector` away and the window already explains it.
+ * DUNGEON_BLITZ_ALLOW_NO_FLASH=1 keeps a deliberately Flash-less build startable.
  */
 function buildIsPlayable() {
-    if (!app.isPackaged || gameEngine()) {
+    if (!app.isPackaged || projectorReady()) {
         return true;
     }
     return process.env.DUNGEON_BLITZ_ALLOW_NO_FLASH === '1';
 }
 
 function refuseToStart() {
-    const vendored = findVendoredPlugin();
+    const vendored = findVendoredProjector();
     const detail = [
         'This copy of the launcher has no Flash Player, so the game could not start even after signing in.',
         '',
@@ -247,14 +207,14 @@ function refuseToStart() {
         'This is an incomplete or outdated build.',
         '',
         'Fix: install the current build again from the .dmg or .zip, or in a development',
-        'checkout run `npm run extract-flash` and start it there.',
+        'checkout run `npm run fetch-projector` and start it there.',
         '',
         'To start anyway (a deliberately Flash-less build), set DUNGEON_BLITZ_ALLOW_NO_FLASH=1.'
     ].join('\n');
 
-    console.log('[Flash] Refusing to start: this build carries no Flash Player and no Flash plugin.');
+    console.log('[Flash] Refusing to start: this build carries no Flash Player.');
     if (vendored) {
-        console.log(`[Flash] (a vendored plugin was found at ${vendored} but could not be armed)`);
+        console.log(`[Flash] (a vendored Flash Player was found at ${vendored} but cannot run here)`);
     }
     dialog.showErrorBox('Dungeon Blitz: R cannot start', detail);
     app.exit(1);
@@ -313,30 +273,13 @@ function presenceSummary() {
 }
 
 function flashStatus() {
-    if (gameEngine() === 'projector') {
-        return {
-            found: true,
-            armed: true,
-            engine: 'projector',
-            path: projector.path,
-            version: projector.version,
-            source: projector.source,
-            // The kill switch lives in the browser plugins; the projector never had one.
-            killSwitch: false,
-            architectures: projector.architectures,
-            archMismatch: false
-        };
-    }
-
-    if (!flashPlugin) {
+    if (!projector) {
         return {
             found: false,
             armed: false,
-            engine: '',
             path: '',
             version: '',
             source: '',
-            killSwitch: false,
             architectures: [],
             archMismatch: false
         };
@@ -344,14 +287,12 @@ function flashStatus() {
 
     return {
         found: true,
-        armed: flashArmed,
-        engine: 'plugin',
-        path: flashPlugin.path,
-        version: flashPlugin.version,
-        source: flashPlugin.source,
-        killSwitch: flashPlugin.killSwitch,
-        architectures: flashPlugin.architectures,
-        archMismatch: flashPlugin.archMismatch
+        armed: !projector.archMismatch,
+        path: projector.path,
+        version: projector.version,
+        source: projector.source,
+        architectures: projector.architectures,
+        archMismatch: projector.archMismatch
     };
 }
 
@@ -483,7 +424,7 @@ function createLauncherWindow() {
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: false,
-            // The launcher shell has no business hosting plugins; only the game window does.
+            // The launcher shell hosts no plugins; the game runs in the standalone Flash Player.
             plugins: false
         }
     });
@@ -504,126 +445,6 @@ function openExternal(url) {
     void shell.openExternal(safeUrl);
 }
 
-// Flash content can ask to navigate, and a plugin-enabled window must not be walked onto
-// an arbitrary origin by a page -- or by anything a page loads.
-function guardNavigation(contents, allowedOrigin) {
-    contents.on('will-navigate', (event, url) => {
-        if (allowedOrigin && originOf(url) === allowedOrigin) {
-            return;
-        }
-        event.preventDefault();
-        openExternal(url);
-    });
-
-    contents.on('new-window', (event, url) => {
-        event.preventDefault();
-        openExternal(url);
-        nudgeDiscordLoginPoll();
-    });
-
-    contents.on('will-attach-webview', (event) => {
-        event.preventDefault();
-    });
-}
-
-// Discord's OAuth hand-off can finish outside the game page, which then never sees the
-// localStorage event it normally waits on. Restarting its poll from here keeps the login
-// flow working without modifying the page.
-function nudgeDiscordLoginPoll() {
-    if (!gameWindow || gameWindow.isDestroyed()) {
-        return;
-    }
-
-    void gameWindow.webContents
-        .executeJavaScript(
-            'typeof startDiscordPendingLoginPoll === "function" ? (startDiscordPendingLoginPoll(), true) : false',
-            true
-        )
-        .catch(() => false);
-}
-
-function createGameWindow(url) {
-    const saved = state.read();
-    const bounds = saved.windowBounds || {};
-
-    gameWindow = new BrowserWindow({
-        width: Number.isFinite(bounds.width) ? bounds.width : GAME_WINDOW_DEFAULTS.width,
-        height: Number.isFinite(bounds.height) ? bounds.height : GAME_WINDOW_DEFAULTS.height,
-        x: Number.isFinite(bounds.x) ? bounds.x : undefined,
-        y: Number.isFinite(bounds.y) ? bounds.y : undefined,
-        minWidth: GAME_WINDOW_DEFAULTS.minWidth,
-        minHeight: GAME_WINDOW_DEFAULTS.minHeight,
-        backgroundColor: BACKGROUND_COLOR,
-        title: 'Dungeon Blitz',
-        show: false,
-        icon: windowIcon,
-        webPreferences: {
-            plugins: true,
-            contextIsolation: true,
-            nodeIntegration: false,
-            webviewTag: false,
-            webSecurity: true
-        }
-    });
-
-    gameWindow.setMenuBarVisibility(false);
-    currentGameOrigin = originOf(url);
-    guardNavigation(gameWindow.webContents, currentGameOrigin);
-
-    gameWindow.webContents.on('before-input-event', (event, input) => {
-        if (input.type !== 'keyDown') {
-            return;
-        }
-        if (input.key === 'F11') {
-            gameWindow.setFullScreen(!gameWindow.isFullScreen());
-            event.preventDefault();
-            return;
-        }
-        if (input.key === 'F5' || (input.control && input.key.toLowerCase() === 'r')) {
-            gameWindow.webContents.reload();
-            event.preventDefault();
-            return;
-        }
-        if (input.control && input.shift && input.key.toLowerCase() === 'i') {
-            gameWindow.webContents.toggleDevTools();
-            event.preventDefault();
-        }
-    });
-
-    gameWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
-        if (!isMainFrame || errorCode === -3) {
-            return;
-        }
-
-        dialog.showMessageBox(gameWindow, {
-            type: 'error',
-            title: 'Connection error',
-            message: 'The game page could not be opened.',
-            detail: `${validatedUrl}\n\n${errorDescription} (${errorCode})`,
-            buttons: ['OK']
-        });
-        gameWindow.close();
-    });
-
-    gameWindow.on('close', () => {
-        if (gameWindow.isFullScreen()) {
-            return;
-        }
-        state.write({ windowBounds: gameWindow.getNormalBounds() });
-    });
-
-    gameWindow.on('closed', () => {
-        gameWindow = null;
-        currentGameOrigin = '';
-        endGameSession();
-    });
-
-    gameWindow.once('ready-to-show', () => gameWindow.show());
-    gameWindow.loadURL(url);
-    // Whoever the game ends up signing in as is remembered for the next launch.
-    startAccountPolling();
-}
-
 // Presence and lobby chat belong to a game session, so closing the game ends both;
 // keeping them up would leave the player shown as playing nothing.
 function endGameSession() {
@@ -635,7 +456,7 @@ function endGameSession() {
     if (launcherWindow && !launcherWindow.isDestroyed()) {
         launcherWindow.show();
     } else if (!BrowserWindow.getAllWindows().length && process.platform !== 'darwin') {
-        // The player closed the launcher while playing; with the game gone too there is
+        // The player closed the launcher while playing; with Flash Player gone too there is
         // nothing left open, which is when the launcher has always quit.
         app.quit();
     }
@@ -646,8 +467,8 @@ function endGameSession() {
  * Opens the game in Adobe's standalone Flash Player.
  *
  * The projector loads the SWF straight from the server, so the game connects exactly as
- * it does from the page, and runs in Flash Player's own window and renderer instead of a
- * plugin box inside Chromium 87.
+ * it does from the page, in Flash Player's own window and renderer. The game page's own
+ * script does not run there; lib/gameHost.js does its work instead.
  *
  * @returns {Promise<{ ok: boolean, message?: string }>}
  */
@@ -699,10 +520,6 @@ function stopGameProcess() {
 }
 
 async function play(serverId) {
-    if (gameWindow && !gameWindow.isDestroyed()) {
-        gameWindow.focus();
-        return { ok: true };
-    }
     if (gameProcess) {
         // Flash Player's window is its own; it is already open.
         return { ok: true };
@@ -716,34 +533,24 @@ async function play(serverId) {
     if (!selected) {
         return { ok: false, message: 'No servers configured. Check servers.json.' };
     }
-    const engine = gameEngine();
-    if (!engine) {
+    if (!projector) {
         return {
             ok: false,
-            message: flashPlugin
-                ? 'The Flash path changed. Restart the launcher to pick it up.'
-                : 'Flash Player is missing. Choose the standalone Flash Player (flashplayer_32_sa) by hand.'
+            message: 'Flash Player is missing. Choose the standalone Flash Player (flashplayer_32_sa) by hand.'
         };
     }
-
-    // Arming only sets command-line switches; the plugin is loaded in-process when the
-    // game page asks for it, and an architecture mismatch fails silently there. Refuse
-    // with the actual mismatch so the fix is obvious instead of a dead plugin box.
-    if (engine === 'plugin' && flashPlugin.archMismatch) {
+    if (projector.archMismatch) {
         return {
             ok: false,
-            message:
-                `The Flash plugin is ${flashPlugin.architectures.join('/')} but this launcher runs as ` +
-                `${process.arch}, and a PPAPI plugin must match. Reinstall the dependencies as x64: ` +
-                '`npm_config_arch=x64 npm install`.'
+            message: `Flash Player is a ${projector.architectures.join('/')} program and cannot run on this machine.`
         };
     }
 
     state.write({ serverId: selected.id });
 
-    // Before the window, not after: the game page begins polling for a pending sign-in as
-    // soon as it loads, and the point of the saved token is that there is already one
-    // waiting. An expired token is the one case that stops the launch: continuing would
+    // Before Flash Player starts, not after: the server signs the game's first connection
+    // in from a pending hand-off, and the point of the saved token is that there is already
+    // one waiting. An expired token is the one case that stops the launch: continuing would
     // drop the player into the SWF's password path with a perfectly good account.
     const resumed = await resumeLauncherSession(selected.url);
     if (resumed.expired) {
@@ -790,21 +597,15 @@ async function play(serverId) {
         void gameStats.sync();
     }
 
-    if (engine === 'projector') {
-        const launched = await launchProjector(selected.url, settings);
-        if (!launched.ok) {
-            gameHost.stop();
-            presence.stop();
-            chatRelay.stop();
-            gameStats.stop();
-        }
-        pushState();
-        return launched;
+    const launched = await launchProjector(selected.url, settings);
+    if (!launched.ok) {
+        gameHost.stop();
+        presence.stop();
+        chatRelay.stop();
+        gameStats.stop();
     }
-
-    createGameWindow(selected.url);
     pushState();
-    return { ok: true };
+    return launched;
 }
 
 // Discord's consent screen is sent to the player's own browser, never rendered here:
@@ -842,8 +643,9 @@ function openDiscordLogin() {
         // grants the token against. It is also what play() below spends, so the token has to
         // be asked for first.
         await captureLauncherSession(selected.url, pending.email);
-        nudgeDiscordLoginPoll();
-        if (!gameWindow) {
+        // A game already open needs nothing: the server's OAuth callback signs its open
+        // connection in by itself. Otherwise this sign-in is what the player was waiting on.
+        if (!gameProcess) {
             await play();
         }
         pushState();
@@ -858,8 +660,8 @@ function openDiscordLogin() {
 // The server's Discord hand-off is a two-minute record keyed by the player's address, and
 // the login packet spends it. What is kept now is a device token the server issues after a
 // real Discord sign-in (lib/launcherSession.js); redeeming it on the next start recreates
-// exactly the hand-off the OAuth callback would have, so the game page's own poll signs the
-// player in as usual. The account *name* is kept on top of that, so the window can greet a
+// exactly the hand-off the OAuth callback would have, so the server signs the game's
+// connection in as usual. The account *name* is kept on top of that, so the window can greet a
 // returning player instead of offering the sign-in button again.
 function rememberDiscordLogin(email, name) {
     const nextEmail = String(email || '').trim();
@@ -1150,23 +952,16 @@ function registerIpc() {
     });
 
     ipcMain.handle('launcher:browseFlash', async () => {
-        // The standalone Flash Player is what the launcher wants; a PPAPI plugin is still
-        // accepted as the fallback engine.
         const filters =
             process.platform === 'win32'
-                ? [
-                      { name: 'Flash Player', extensions: ['exe'] },
-                      { name: 'Flash PPAPI plugin', extensions: ['dll'] }
-                  ]
+                ? [{ name: 'Flash Player', extensions: ['exe'] }]
                 : process.platform === 'darwin'
-                  ? [{ name: 'Flash Player', extensions: ['app', 'plugin'] }]
-                  : [
-                        { name: 'Flash Player', extensions: ['*'] },
-                        { name: 'Flash PPAPI plugin', extensions: ['so'] }
-                    ];
+                  ? [{ name: 'Flash Player', extensions: ['app'] }]
+                  : [{ name: 'Flash Player', extensions: ['*'] }];
 
         const result = await dialog.showOpenDialog(launcherWindow, {
-            title: 'Choose Flash Player',
+            title: 'Choose Flash Player (flashplayer_32_sa)',
+            // A macOS .app is a folder; picking it needs openDirectory as well.
             properties: process.platform === 'darwin' ? ['openFile', 'openDirectory'] : ['openFile'],
             filters
         });
@@ -1176,20 +971,13 @@ function registerIpc() {
         }
 
         const chosen = result.filePaths[0];
+        if (!isChosenProjector(chosen)) {
+            return { ...launcherState(), notice: 'That is not the standalone Flash Player (flashplayer_32_sa).' };
+        }
         // The projector is started per game, so a new one applies on the next play with no
-        // restart -- unlike the plugin, whose path Chromium freezes at startup.
-        if (isChosenProjector(chosen)) {
-            state.write({ projectorPath: chosen });
-            projector = locateProjector(chosen);
-            return launcherState();
-        }
-
-        state.write({ flashPath: chosen });
-        const rescanned = locateFlash(chosen);
-        if ((rescanned && rescanned.path) !== (flashPlugin && flashPlugin.path)) {
-            flashArmed = false;
-        }
-        flashPlugin = rescanned;
+        // restart.
+        state.write({ projectorPath: chosen });
+        projector = locateProjector(chosen);
         return launcherState();
     });
 
@@ -1223,7 +1011,7 @@ if (!app.requestSingleInstanceLock()) {
     app.quit();
 } else {
     app.on('second-instance', () => {
-        const target = gameWindow || launcherWindow;
+        const target = launcherWindow;
         if (target && !target.isDestroyed()) {
             if (target.isMinimized()) {
                 target.restore();
@@ -1234,7 +1022,7 @@ if (!app.requestSingleInstanceLock()) {
     });
 
     applyWindowsCompatibility();
-    armFlash();
+    findFlashPlayer();
     restoreDiscordLogin();
     installLocation = inspectInstallLocation({ isPackaged: app.isPackaged, appPath: app.getAppPath() });
     if (installLocation.relocate) {
@@ -1280,10 +1068,10 @@ if (!app.requestSingleInstanceLock()) {
         void refreshDiscordAccount();
 
         // A player who has signed in before is not asked again: play() redeems the saved
-        // device token on the way, so the game page finds a sign-in waiting for it. If the
+        // device token on the way, so the game finds a sign-in waiting for it. If the
         // token has been revoked or has expired, play() says so and the launcher window is
         // already up with the Discord button on it.
-        if (remembered && gameEngine()) {
+        if (remembered && projectorReady()) {
             void play();
         }
 
@@ -1297,8 +1085,8 @@ if (!app.requestSingleInstanceLock()) {
 
     app.on('window-all-closed', () => {
         // Flash Player's window is not one of ours: closing the launcher while the game is
-        // open in it leaves the session running, the same as closing the launcher beside the
-        // game window always did. endGameSession() quits once the game closes too.
+        // open in it leaves the session running. endGameSession() quits once the game
+        // closes too.
         if (gameProcess) {
             return;
         }

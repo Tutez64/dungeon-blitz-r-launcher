@@ -5,13 +5,11 @@
  * Fills `src/launcher/vendor/<kind>/<platform>/` -- the folders electron-builder ships as
  * extra resources -- from the two places the binaries come from:
  *
- *   payload/projector/<platform>/ committed (Git LFS)    -> vendor/projector/<platform>/
- *   payload/flash/<platform>/   committed (Git LFS)      -> vendor/flash/<platform>/
  *   payload/social/<platform>/  committed (Git LFS)      -> vendor/social/<platform>/
  *   <cmake build dir>           built during the job     -> vendor/social/<platform>/
  *
- * `vendor/` stays a build output that nobody commits, so a local checkout that ran
- * tools/extract-flash.js and a CI job that unpacked the payload end up identical.
+ * `vendor/` stays a build output that nobody commits. The standalone Flash Player is not
+ * staged from here: tools/fetch-projector.js downloads it into vendor/projector/.
  *
  * Usage:
  *   node tools/stage-vendor.js [--platform linux] [--bridge-build <dir>]
@@ -70,10 +68,7 @@ function copyRecursive(source, target) {
     if (/discord_social_bridge(\.exe)?$/.test(source)) {
         fs.chmodSync(target, 0o755);
     }
-    // The same for the projector: the Linux binary and the one inside the macOS bundle.
-    if (/(^|[\\/])flashplayer[^\\/]*$|\.app[\\/]Contents[\\/]MacOS[\\/]/.test(source)) {
-        fs.chmodSync(target, 0o755);
-    }
+
 }
 
 function stagePayload(kind, platform) {
@@ -118,16 +113,10 @@ function main() {
         process.exit(1);
     }
 
-    const projector = stagePayload('projector', args.platform);
-    const flash = stagePayload('flash', args.platform);
     const socialPayload = stagePayload('social', args.platform);
     const socialBuilt = stageBridgeBuild(args.bridgeBuild, args.platform);
 
     console.log(`[stage-vendor] platform: ${args.platform}`);
-    console.log(
-        `[stage-vendor] projector: ${projector.length ? projector.join(', ') : '(none in payload - the game falls back to the plugin)'}`
-    );
-    console.log(`[stage-vendor] flash:   ${flash.length ? flash.join(', ') : '(none in payload)'}`);
     console.log(
         `[stage-vendor] social:  ${
             socialBuilt.length

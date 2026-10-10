@@ -20,7 +20,7 @@ const elements = {
 };
 
 /**
- * The rows under the problem banner: which Flash plugin is armed, whether Discord shows the
+ * The rows under the problem banner: which Flash Player the game runs in, whether Discord shows the
  * player as playing, and what the two chat directions are doing. The values stay short and
  * the detail (paths, last status, last error) moves into the tooltip, so the row is
  * readable at a glance without becoming a log.
@@ -33,10 +33,9 @@ function engineRows(state) {
     const widget = state.gameStats || {};
     const system = state.windows || {};
 
-    // What this Windows costs. Windows 7 and 8 run the launcher on a software rasteriser:
-    // playable, visibly slower, and a player who did not know that would read the frame
-    // rate as a fault in the launcher. The machine is the first row because everything
-    // below it is answered differently on it.
+    // What this Windows costs. Windows 7 and 8 draw the launcher window on a software
+    // rasteriser. The game is not affected -- it runs in Flash Player, which renders on its
+    // own -- but the row says so, so a slow launcher window does not read as a fault.
     let systemValue = 'supported';
     let systemTone = 'muted';
     let systemDetail = 'This launcher runs here with hardware rendering.';
@@ -51,8 +50,8 @@ function engineRows(state) {
         systemValue = `${system.product} - software rendering`;
         systemTone = 'warn';
         systemDetail =
-            "Chromium 87 cannot drive this machine's GPU, so the launcher renders in software. " +
-            'The game window is slower here than on a newer Windows.';
+            "Chromium 87 cannot drive this machine's GPU, so the launcher window renders in software. " +
+            'The game runs in Flash Player and is not affected.';
     } else if (system.legacy) {
         systemValue = system.product;
         systemTone = 'ok';
@@ -61,23 +60,18 @@ function engineRows(state) {
         systemValue = system.product;
     }
 
-    // The engine leads the value: the standalone Flash Player is the one the launcher wants,
-    // and "plugin" says at a glance that this copy fell back to the PPAPI plugin.
+    // The standalone Flash Player (flashplayer_32_sa) the game runs in.
     let flashValue = 'missing';
     let flashTone = 'bad';
     let flashDetail = 'No Flash Player was found. Choose the standalone Flash Player (flashplayer_32_sa) by hand.';
     if (flash.found) {
         flashDetail = flash.path || '';
         if (flash.archMismatch) {
-            flashValue = `${(flash.architectures || []).join('/')}-only - cannot load`;
+            flashValue = `${(flash.architectures || []).join('/')}-only - cannot run here`;
             flashTone = 'bad';
         } else {
-            const engine = flash.engine === 'projector' ? 'Player' : flash.engine === 'plugin' ? 'plugin' : '';
-            flashValue = [engine, flash.version || 'unknown version', flash.source].filter(Boolean).join(' - ');
-            flashTone = flash.engine === 'plugin' ? 'warn' : 'ok';
-            if (flash.engine === 'plugin') {
-                flashDetail = `${flash.path || ''}\nNo standalone Flash Player was found, so the game runs on the slower PPAPI plugin.`;
-            }
+            flashValue = [flash.version || 'unknown version', flash.source].filter(Boolean).join(' - ');
+            flashTone = 'ok';
         }
     }
 
@@ -312,25 +306,20 @@ function render(state) {
     elements.account.hidden = !state.discord.remembered;
     elements.accountName.textContent = accountLabel(state.discord);
     elements.play.disabled = !playable;
-    elements.relaunch.hidden = !flash.found || flash.armed;
+    // Flash Player is started fresh for every game, so a new choice never needs a restart.
+    elements.relaunch.hidden = true;
     elements.forget.hidden = !state.discord.remembered;
 
     if (!flash.found) {
         showProblem('Flash Player is missing. Point the launcher at it to continue.', 'bad');
     } else if (flash.archMismatch) {
         showProblem(
-            `The Flash plugin is ${flash.architectures.join('/')} but this launcher runs as a ` +
-                'different architecture, so Flash cannot load. Reinstall dependencies as x64: ' +
-                'npm_config_arch=x64 npm install',
+            `This Flash Player is a ${flash.architectures.join('/')} program and cannot run on this machine. ` +
+                'Choose the flashplayer_32_sa build for this system.',
             'bad'
         );
-    } else if (!flash.armed) {
-        showProblem('The Flash path changed. Restart the launcher to pick it up.', 'warn');
-    } else if (flash.killSwitch) {
-        showProblem(
-            `Flash ${flash.version} carries Adobe's 2021 kill switch and may refuse to run the game.`,
-            'warn'
-        );
+    } else if (state.notice) {
+        showProblem(state.notice, 'warn');
     } else if (state.serverReachable === false) {
         showProblem(`Could not reach ${state.selectedServerUrl}`, 'bad');
     } else {

@@ -144,10 +144,9 @@ function baseState(flash, social, extra = {}) {
 const ARMED_FLASH = {
     found: true,
     armed: true,
-    path: '/Applications/Dungeon Blitz R.app/Contents/Resources/vendor/flash/darwin/PepperFlashPlayer.plugin',
-    version: '32.0.0.303',
+    path: '/Applications/Dungeon Blitz R.app/Contents/Resources/vendor/projector/darwin/Flash Player.app',
+    version: '32.0.0.465',
     source: 'vendor',
-    killSwitch: false,
     architectures: ['x64'],
     archMismatch: false
 };
@@ -158,7 +157,6 @@ const MISSING_FLASH = {
     path: '',
     version: '',
     source: '',
-    killSwitch: false,
     architectures: [],
     archMismatch: false
 };
@@ -198,7 +196,7 @@ function main() {
         rows.map((entry) => [entry.label, entry.value, entry.tone]),
         [
             ['Windows', 'Windows 10 or later', 'muted'],
-            ['Flash', '32.0.0.303 - vendor', 'ok'],
+            ['Flash', '32.0.0.465 - vendor', 'ok'],
             ['Discord status', 'Home - Idling in town', 'ok'],
             ['Lobby chat', 'connected', 'ok'],
             ['In-game chat', '3 sent - 1 received', 'ok'],
@@ -206,7 +204,7 @@ function main() {
             ['Update', 'up to date', 'muted']
         ]
     );
-    assert.ok(row(rows, 'Flash').detail.includes('PepperFlashPlayer.plugin'), 'the Flash path is the tooltip');
+    assert.ok(row(rows, 'Flash').detail.includes('Flash Player.app'), 'the Flash Player path is the tooltip');
     assert.strictEqual(row(rows, 'Lobby chat').detail, 'Lobby chat connected.');
     assert.ok(row(rows, 'Discord status').detail.includes('47631'), 'the local presence endpoint is the tooltip');
 
@@ -225,6 +223,7 @@ function main() {
     assert.strictEqual(row(rows, 'Windows').value, 'Windows 7 SP1 - software rendering');
     assert.strictEqual(row(rows, 'Windows').tone, 'warn');
     assert.ok(row(rows, 'Windows').detail.includes('software'), row(rows, 'Windows').detail);
+    assert.ok(row(rows, 'Windows').detail.includes('not affected'), 'the game itself is not slowed down');
 
     // A Windows the pinned runtime cannot run on: said in the strip, not left to decode
     // from a launcher that would not have started.
@@ -253,32 +252,8 @@ function main() {
     // A plugin whose architecture cannot load here.
     render(baseState({ ...ARMED_FLASH, archMismatch: true }, IDLE_SOCIAL));
     rows = rowsFrom(registry);
-    assert.strictEqual(row(rows, 'Flash').value, 'x64-only - cannot load');
+    assert.strictEqual(row(rows, 'Flash').value, 'x64-only - cannot run here');
     assert.strictEqual(row(rows, 'Flash').tone, 'bad');
-
-    // The standalone Flash Player is the engine: the row says so, and is healthy.
-    render(
-        baseState(
-            {
-                ...ARMED_FLASH,
-                engine: 'projector',
-                path: 'C:\\Program Files\\Dungeon Blitz R\\resources\\vendor\\projector\\win32\\flashplayer_32_sa.exe',
-                version: '32.0.0.465',
-                architectures: ['ia32']
-            },
-            IDLE_SOCIAL
-        )
-    );
-    rows = rowsFrom(registry);
-    assert.strictEqual(row(rows, 'Flash').value, 'Player - 32.0.0.465 - vendor');
-    assert.strictEqual(row(rows, 'Flash').tone, 'ok');
-
-    // Falling back to the plugin plays, but is the slower engine: a warning, not a fault.
-    render(baseState({ ...ARMED_FLASH, engine: 'plugin' }, IDLE_SOCIAL));
-    rows = rowsFrom(registry);
-    assert.strictEqual(row(rows, 'Flash').value, 'plugin - 32.0.0.303 - vendor');
-    assert.strictEqual(row(rows, 'Flash').tone, 'warn');
-    assert.ok(row(rows, 'Flash').detail.includes('No standalone Flash Player'), 'the tooltip says why');
 
     // Everything idle is normal: presence and chat both start with the game.
     render(baseState(MISSING_FLASH, IDLE_SOCIAL));

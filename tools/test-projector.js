@@ -297,7 +297,30 @@ async function testRegionLatency() {
     console.log('[test-projector] region latency is measured and reported as the game page did: OK');
 }
 
+/**
+ * The lock file is what every build downloads Flash Player against: each platform needs
+ * a pinned hash and Adobe's own server first, or a build would ship whatever a mirror sent.
+ */
+function testLockFile() {
+    const lock = require('../projector.lock.json');
+    for (const platform of ['win32', 'darwin', 'linux']) {
+        const entry = lock[platform];
+        assert.ok(entry, `projector.lock.json covers ${platform}`);
+        assert.match(entry.sha256, /^[0-9a-f]{64}$/, `${platform} has a pinned sha256`);
+        assert.ok(entry.urls.length >= 2, `${platform} has a fallback mirror`);
+        assert.ok(entry.urls[0].startsWith('https://fpdownload.macromedia.com/'), `${platform} tries Adobe first`);
+        for (const url of entry.urls) {
+            assert.ok(url.startsWith('https://'), url);
+            assert.ok(url.endsWith(entry.file), `${url} is ${entry.file}`);
+        }
+    }
+    assert.strictEqual(lock.win32.file, 'flashplayer_32_sa.exe');
+    assert.strictEqual(lock.darwin.file, 'flashplayer_32_sa.dmg');
+    console.log('[test-projector] every platform downloads flashplayer_32_sa against a pinned hash: OK');
+}
+
 async function main() {
+    testLockFile();
     testSwfUrl();
     await testResolveSwfUrl();
     testCanExecute();

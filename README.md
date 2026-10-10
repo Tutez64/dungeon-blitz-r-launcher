@@ -4,67 +4,112 @@ A desktop launcher that plays Dungeon Blitz in Adobe's standalone Flash Player, 
 do not need a browser that still has Flash. It ships for Windows, macOS and Linux.
 
 The launcher is a sign-in screen, not a control panel. It asks for one thing — sign in
-with Discord — and once that is done it opens the game window and connects to the server.
-A player who has signed in before is not asked again.
+with Discord — and once that is done it opens the game in Flash Player and connects to the
+server. A player who has signed in before is not asked again.
 
-In the background it also arms the Flash plugin, connects the player's Discord lobby so
-lobby chat works, publishes Discord rich presence, and mirrors the player's in-game chat
-into that lobby — in both directions — for as long as the game window is open.
+In the background it also connects the player's Discord lobby so lobby chat works,
+publishes Discord rich presence, and mirrors the player's in-game chat into that lobby — in
+both directions — for as long as the game is open.
 
 ## Game engine: the standalone Flash Player
 
-The game runs in **Adobe Flash Player itself** -- the standalone player Adobe calls the
-projector (`flashplayer_32_sa.exe` on Windows, `Flash Player.app` on macOS, `flashplayer`
-on Linux). The launcher starts it on the game's SWF, straight from the selected server:
+The game runs in **Adobe Flash Player itself** -- `flashplayer_32_sa`, the standalone
+player Adobe calls the projector. The launcher starts it on the game's SWF, straight from
+the selected server:
 
 ```
 flashplayer_32_sa.exe http://<server>/p/cbp/DungeonBlitz.swf?fv=cbp&gv=cbp&clientrev=...
 ```
 
-It used to run in the PPAPI plugin extracted from FlashBrowser, inside a Chromium 87
-window. That plugin sits behind Chromium's plugin host, compositor and IPC, which is where
-the input and frame delay came from. The projector is its own process, window and
-renderer, with nothing between it and the game. It also does not carry the 2021-01-12 kill
-switch the browser plugins have, so any 32.x projector plays.
+Flash Player runs as its own process, with its own window and renderer. Nothing sits
+between it and the game. The standalone player also has no 2021-01-12 kill switch; the
+browser plugins do.
 
-| Platform | Put this in `payload/projector/<platform>/` |
-| --- | --- |
-| Windows | `flashplayer_32_sa.exe` (32-bit; it runs on 64-bit Windows too) |
-| macOS | `Flash Player.app` (Intel; runs under Rosetta on Apple Silicon) |
-| Linux | `flashplayer` (from `flash_player_sa_linux.x86_64.tar.gz`) |
+The launcher used to run the game in the PPAPI plugin taken from FlashBrowser, inside a
+Chromium 87 window. That plugin sat behind Chromium's plugin host, compositor and IPC,
+which is where the input and frame delay came from. It has been removed entirely.
 
-`tools/stage-vendor.js` copies it to `vendor/projector/<platform>/` and the package carries
-it as an extra resource. In a checkout you can drop it in a gitignored `projector/` folder at
-the repository root instead. The launcher also looks in the usual install places (and in
-Downloads), and the **Choose Flash Player...** button takes one by hand. A player who
-picks one by hand does not need to restart: the projector is started fresh for every game.
+| Platform | What ships | Notes |
+| --- | --- | --- |
+| Windows | `flashplayer_32_sa.exe` | 32-bit; runs on 32-bit and 64-bit Windows |
+| macOS | `Flash Player.app` (from `flashplayer_32_sa.dmg`) | Intel; runs under Rosetta on Apple Silicon |
+| Linux | `flashplayer` (from `flash_player_sa_linux.x86_64.tar.gz`) | x86_64; needs GTK 2 |
 
-**What the launcher now does for the page.** The projector loads only the SWF, not the game
-page, so the page's script does not run. The launcher does its jobs instead while the
-projector is open (`lib/gameHost.js`):
+### Where it comes from
+
+```bash
+npm run fetch-projector                                   # this machine's platform
+node tools/fetch-projector.js --platform win32            # another platform
+```
+
+`tools/fetch-projector.js` downloads the player into `vendor/projector/<platform>/`:
+
+- It tries Adobe's own update server (`fpdownload.macromedia.com`) first. That server
+  still serves all three builds.
+- It falls back to the Internet Archive's copy of the same URL.
+- Whichever mirror answers, it checks the file against the SHA-256 pinned in
+  `projector.lock.json`. A file that does not match is never used.
+
+The macOS disk image is unpacked with `hdiutil` and `ditto`, so it has to be fetched on a
+Mac -- which is where the macOS package is built anyway. The `Flash Player` workflow runs the
+fetch on all three platforms whenever any of these change: the lock file, the fetch script,
+or `lib/projector.js`. It also checks Adobe's signature on the downloaded player.
+
+The package carries the player as an extra resource. A checkout can instead drop it in a
+gitignored `projector/` folder at the repository root. The launcher also looks in the usual
+install places and in Downloads, and the **Choose Flash Player...** button takes one by
+hand. A new choice applies on the next game with no restart, because the player is started
+fresh for every game.
+
+### What the launcher does for the game page
+
+The projector loads only the SWF, not the game page, so the page's script does not run.
+While the game is open, the launcher does that script's jobs itself (`lib/gameHost.js`):
 
 - It polls `/api/presence/self` every 4 s and publishes rich presence.
 - It measures latency to each game region and reports it to `/api/region-rtt`.
 
-Sign-in needs nothing from the page. The server signs a fresh game connection in from the
-pending hand-off that the saved launcher token recreates, and the OAuth callback signs in
-an open connection by itself.
+Sign-in needs nothing from the page:
 
-**Fallback.** If no usable projector is found, the game opens on the PPAPI plugin exactly as
-before. The status strip shows which engine is in use:
+- On a fresh connection, the server signs the game in from the pending hand-off that the
+  saved launcher token recreates.
+- If the game is already open when the player signs in, the OAuth callback signs that open
+  connection in.
 
-- `Player - <version> - <source>` is the projector.
-- `plugin - ...`, in amber, is the fallback.
+### A build without Flash Player
 
-`DUNGEON_BLITZ_ENGINE=plugin` forces the plugin, for comparing the two on one machine.
-Preflight prints a loud warning when a package has no projector, and only fails when it has
-neither engine.
+A **packaged** launcher always ships its own Flash Player. One that finds none refuses to
+start: it shows an error box naming the path it is running from and quits, rather than
+leaving a player on a sign-in screen that leads nowhere. Set
+`DUNGEON_BLITZ_ALLOW_NO_FLASH=1` for a deliberately Flash-less build.
+
+Development checkouts are exempt from that refusal. There, a missing player is one
+`npm run fetch-projector` away, and the launcher window says so.
+
+The 1.0.3 macOS release shipped exactly that refusal dialog. The macOS build packaged an app
+with no Flash in it, and the build check only printed a warning that nobody read. So
+`tools/preflight.js` now **fails** the build when the target platform has no Flash Player in
+`vendor/projector/`. A deliberately Flash-less package must set
+`DUNGEON_BLITZ_PREFLIGHT_ALLOW_NO_FLASH=1`.
+
+### The status strip
+
+The sign-in screen carries a status strip. The `Flash` row shows the player's version and
+where it came from (`vendor`, `auto` or `manual`), or `missing`. The other rows show
+`Discord status`, `Lobby chat` and `In-game chat`. Hovering a value shows the Flash Player
+path, the local presence endpoint, or the last error. `main.js` prints the same Flash line on
+the console, and `node tools/test-launcher-status.js` checks every state of that strip.
+
+Once an account is known, the sign-in button is replaced by `Signed in as <name>`. That holds
+whether the sign-in happened in the launcher or inside the game, where the SWF's own Discord
+flow lands the player (see [Remembered account](#remembered-account)).
 
 ## Why Electron 11
 
-Chromium removed the PPAPI Flash host in 88. Electron 11 (Chromium 87) is the last release
-that still understands `--ppapi-flash-path`, so the launcher is pinned to it.
-**Upgrading Electron silently removes Flash support.**
+The launcher window still runs on Electron 11 (Chromium 87), which runs on Windows 7 and 8;
+Electron dropped those in version 23. The pin used to be about Flash too: Chromium 87 was the
+last with the PPAPI Flash host. The game no longer depends on it, so moving to a newer
+Electron is now a question of which Windows versions to keep.
 
 The same pin is why Discord's consent screen is opened in the player's own browser rather
 than inside the app: discord.com's web client no longer parses on Chromium 87. The server
@@ -74,151 +119,50 @@ keys a pending sign-in by requester address, so the launcher's poll still sees t
 
 | Folder | What | In git |
 | --- | --- | --- |
-| `payload/` | The **source** of the binaries a package ships | Yes, via Git LFS |
+| `payload/` | The prebuilt Discord Social SDK bridges | Yes, via Git LFS |
 | `vendor/` | Build output — what packaging reads | No, gitignored |
 
-`tools/stage-vendor.js` copies `payload/` (and a freshly built native bridge, when there is
-one) into `vendor/`. Locally, `tools/extract-flash.js` writes straight into `vendor/`. Both
-produce the same layout.
-
 ```text
-payload/flash/<platform>/     pepflashplayer64.dll | PepperFlashPlayer.plugin | libpepflashplayer.so
-payload/social/<platform>/    discord_social_bridge[.exe] + the SDK runtime library
+vendor/projector/<platform>/  flashplayer_32_sa.exe | Flash Player.app | flashplayer   (tools/fetch-projector.js)
+vendor/social/<platform>/     discord_social_bridge[.exe] + the SDK runtime library   (tools/stage-vendor.js)
 ```
-
-## Flash plugin (fallback engine)
-
-```bash
-npm run extract-flash
-```
-
-This pulls the plugin out of a FlashBrowser installation, which ships **32.0.0.363** — the
-last build before Adobe's 2021-01-12 kill switch, which lives inside the plugin and cannot
-be disabled from the outside. `32.0.0.371` and later will refuse to run the game.
-
-From somewhere else:
-
-```bash
-node tools/extract-flash.js --from "/path/to/FlashBrowser" --platform darwin
-```
-
-If nothing is vendored, the launcher scans the player's own Flash installations and, as a
-last resort, asks for the path on the sign-in screen.
-
-A **packaged** launcher always ships its own plugin, so one that finds nothing at all
-refuses to start: it shows an error box naming the path it is running from and quits,
-rather than leaving a player on a sign-in screen that leads nowhere. That is the shape a
-stale or incompletely built install takes — see `DUNGEON_BLITZ_ALLOW_NO_FLASH=1` for a
-deliberately Flash-less build. Development checkouts are exempt: there, a missing plugin
-is one `npm run extract-flash` away, and the launcher window says so.
-
-The 1.0.3 macOS release shipped exactly that refusal dialog: `payload/flash/darwin/` was
-never committed, the macOS CI job packaged a Flash-less app, and the packaging preflight
-only printed a warning that nobody read. Preflight now **fails** the build when the
-target platform has no plugin in `vendor/` — a deliberate Flash-less package must say so
-with `DUNGEON_BLITZ_PREFLIGHT_ALLOW_NO_FLASH=1` — so the two ends of this can never
-diverge again: a package that would refuse to start cannot leave CI quietly.
-
-The sign-in screen carries a four-row status strip — `Flash`, `Discord status`, `Lobby
-chat` and `In-game chat` — showing the plugin that was armed (version and source, or
-`missing`), whether Discord has a presence for the player, and what each chat direction is
-doing. Hovering a value shows the plugin path, the local presence endpoint, or the last
-error. `main.js` prints the same Flash line on the console, and
-`node tools/test-launcher-status.js` checks every state of that strip.
-
-Once an account is known the sign-in button is replaced by `Signed in as <name>` — whether
-the sign-in happened in the launcher or inside the game, where the SWF's own Discord flow
-lands the player (see [Remembered account](#remembered-account)).
-
-| Platform | File | Where it comes from |
-| --- | --- | --- |
-| Windows | `pepflashplayer64.dll` | FlashBrowser (Windows) |
-| macOS | `PepperFlashPlayer.plugin` | FlashBrowser's macOS build |
-| Linux | `libpepflashplayer.so` | Adobe's archived PPAPI Linux tarball, or Chrome's `PepperFlash` folder |
-
-The plugin is each platform's own native binary; the Windows DLL is of no use on macOS or
-Linux.
 
 ### macOS is x64 only
 
-On purpose. The last Flash plugin is an x86_64 binary and a PPAPI plugin must match the
-architecture of the process hosting it, so an arm64 build would start and then never find a
-usable plugin. Apple Silicon runs this build under Rosetta, and CI uses the Intel runner.
+The package is an x64 Electron app, and Flash Player for macOS is an Intel binary. Apple
+Silicon runs both under Rosetta, and CI builds on the Intel runner.
 
 ### 32-bit Windows
 
 The Windows targets build `ia32` as well as `x64`, so the releases page carries
-`-win-ia32-setup.exe` and `-win-ia32-portable.exe`. **Those installers install and open,
-and then refuse to play.** That is the intended behaviour of the 32-bit build, not a bug
-in it, and it is the only honest thing a 32-bit package can do here.
+`-win-ia32-setup.exe` and `-win-ia32-portable.exe`. **They play.** `flashplayer_32_sa.exe` is
+itself a 32-bit program in its own process, so it runs on 32-bit and 64-bit Windows alike.
 
-The reason is `payload/flash/win32/pepflashplayer64.dll`. It is the only Windows Flash
-plugin this project vendors, it is x86_64, and a PPAPI plugin is loaded *into the
-launcher process* -- so a 32-bit process has nothing it can load. The build would install
-onto a 32-bit Windows and then present a launcher whose game never arrives, which is the
-worst of both outcomes: it looks like a working install and is not one.
+Up to 1.0.16, the 32-bit installers opened and then refused to play. The game ran in an
+x86_64 PPAPI plugin loaded *into* the launcher process, and a 32-bit process cannot load
+that. That refusal is gone with the plugin. `lib/windowsSupport.js` now refuses only an
+architecture there is no build of at all (arm64 Windows running an arm64 build). That
+refusal names the exact x64 installer to download instead.
 
-So the 32-bit build says so itself, at startup, before the first window -- and it names
-the exact file to download instead, because a player who took the wrong installer should
-not have to work out which of the release's files replaces it:
-
-```
-This launcher is a 64-bit application and an ia32 process cannot host the Flash plugin.
-
-Running on: an ia32 process (win32)
-The Flash plugin is an x86_64 binary and a PPAPI plugin is loaded into this very
-process, so there is nothing a 32-bit build can load. The game will not start.
-
-You installed the 32-bit build. Uninstall it and download this file instead:
-
-    DungeonBlitzR-Launcher-1.0.15-win-x64-setup.exe
-
-It is on this release's page, named exactly like that. It is the same download
-for every 64-bit Windows, and the one to use even if this machine is 64-bit --
-the launcher has to be a 64-bit process to load Flash, whatever the OS is.
-
-A 64-bit Windows 7 or later is what this game needs; Windows 7 and 8 run it in
-software, which is slower but works.
-
-See "32-bit Windows" in the launcher README.
-```
-
-The version in that name is the one the player is running, and it comes from the same
-`build.nsis.artifactName` the installer itself is built with, so the dialog cannot point
-at a file that is not on the page.
-
-**The release page lists these in an order that works against you.** GitHub sorts assets
-alphabetically, and `ia32` sorts before `x64`, so the 32-bit installers appear *above* the
-one that plays. A player taking the top Windows download gets these. The download table
-below is therefore written in the order people should actually use.
-
-`lib/windowsSupport.js` is what decides this, and `node tools/test-windows-support.js`
-covers it against Windows 7, 8 and 10 without needing a 32-bit machine. `tools/preflight.js`
-checks the same fact at build time by reading the arches out of `package.json` and parsing
-the plugin's PE header, and prints which of the built packages the plugin will not serve.
-
-**If you need a 32-bit build that actually plays**, the blocker is a binary that cannot be
-produced here: a 32-bit `pepflashplayer32.dll`, added to `payload/flash/win32/` (Git LFS),
-from a Flash release at `32.0.0.363` or earlier. Nothing above changes -- the config, the
-refusal, and the preflight check all read the plugin that is actually there. Later than
-that version the plugin carries Adobe's kill switch and refuses to run the game at all.
+The ia32 run still never publishes an update manifest (see "Why Windows is built as two
+runs"). Auto-update therefore always offers the x64 installer, and a 32-bit player updates
+by downloading the new ia32 installer.
 
 ### Windows versions
 
-Electron 11 is old enough to still run on Windows 7. Electron only dropped Windows 7, 8 and
-8.1 in version 23, long after the PPAPI Flash host this launcher is pinned to was removed,
-so the runtime starts on every Windows from 7 Service Pack 1 up:
+Electron 11 is old enough to still run on Windows 7: Electron only dropped Windows 7, 8 and
+8.1 in version 23. So the launcher starts on every Windows from 7 Service Pack 1 up, 32-bit
+or 64-bit:
 
 | Windows | Result |
 | --- | --- |
-| Windows 7 SP1 (x64) | supported, renders in software |
-| Windows 8, Windows 8.1 (x64) | supported, renders in software |
+| Windows 7 SP1 | supported; the launcher window renders in software |
+| Windows 8, Windows 8.1 | supported; the launcher window renders in software |
 | Windows 10 and later | supported, hardware rendering |
 | Windows Vista and older | refused at start, naming what is needed |
 
-**64-bit only**, for the same reason macOS is: the plugin is an x86_64 binary and a PPAPI
-plugin must match the process hosting it. See "32-bit Windows" below for what the ia32
-installers do.
+The software rendering applies to the launcher window only. The game runs in Flash Player,
+which does its own rendering.
 
 **Windows 7 needs the Universal C Runtime update.** Electron's binaries link against
 `ucrtbase.dll`, which Windows 7 and 8 carry only through **KB2999226** (or the earlier
@@ -231,11 +175,11 @@ launcher is most wanted -- the window is black or the GPU process dies during st
 never says which driver is at fault. `lib/windowsSupport.js` therefore switches Windows 7
 and 8 to software rendering (`--use-gl=swiftshader --disable-gpu-compositing`) before the
 first window is created, and **leaves Windows 10 alone**: the same switches there would cost
-the game real frames for a problem that machine does not have. A legacy machine that does
+the launcher window real frames for a problem that machine does not have. A legacy machine that does
 have the platform update can keep the GPU with `DUNGEON_BLITZ_GPU=hardware`.
 
-The status strip carries a `Windows` row saying which of these is in force, so a slower game
-window on Windows 7 is not read as a fault in the launcher. `node tools/test-windows-support.js`
+The status strip carries a `Windows` row saying which of these is in force, so a slower
+launcher window on Windows 7 is not read as a fault. `node tools/test-windows-support.js`
 walks the whole matrix from any machine -- `os.release()` is a parameter, not a call.
 
 ## Discord rich presence
@@ -457,16 +401,17 @@ is where a shared setup belongs, since it is not part of this repository.
 ## Running and packaging
 
 ```bash
-npm install && npm run extract-flash && npm start
+npm install && npm run fetch-projector && npm start
 ```
 
 ```bash
 npm run dist:win
 ```
 
-Each `dist:` script first runs `tools/preflight.js` for its platform, which fails the
-build when that platform has no Flash plugin staged in `vendor/` (override for a
-deliberate Flash-less package: `DUNGEON_BLITZ_PREFLIGHT_ALLOW_NO_FLASH=1`).
+Each `dist:` script first fetches Flash Player for its platform
+(`tools/fetch-projector.js`). It then runs `tools/preflight.js`, which fails the build when
+that platform has no Flash Player in `vendor/projector/`. For a deliberately Flash-less
+package, set `DUNGEON_BLITZ_PREFLIGHT_ALLOW_NO_FLASH=1`.
 
 The application icon comes from one source image, `build/icon.png` (1024×1024 with alpha).
 `npm run make-icons` derives the rest from it on a Mac: `build/icon.icns` (macOS app, dock
@@ -501,12 +446,14 @@ npm run dist:win -- --dir --config.win.signAndEditExecutable=false
 
 Bumping `version` in `package.json` on `main` is what cuts a release.
 `.github/workflows/release.yml` then builds on three native runners, stages the binaries,
-runs the preflight (a missing Flash plugin fails the job), runs electron-builder and
-attaches the installers to a draft GitHub release tagged `v<version>`:
+downloads Flash Player (checked against `projector.lock.json`), runs the preflight (a
+missing Flash Player fails the job), runs electron-builder, checks that Flash Player made it
+into the package intact, and attaches the installers to a draft GitHub release tagged
+`v<version>`:
 
 | Platform | Files |
 | --- | --- |
-| Windows | `...-win-x64-setup.exe` **(use this one)**, `...-win-x64-portable.exe`, `...-win-ia32-setup.exe` (cannot play), `...-win-ia32-portable.exe` (cannot play) |
+| Windows | `...-win-x64-setup.exe` (64-bit Windows; auto-updates), `...-win-x64-portable.exe`, `...-win-ia32-setup.exe` (32-bit Windows), `...-win-ia32-portable.exe` |
 | macOS | `...-mac-x64.dmg`, `...-mac-x64.zip` |
 | Linux | `...-linux-x86_64.AppImage`, `...-linux-amd64.deb` |
 
@@ -547,9 +494,7 @@ that each cost a release to learn:
 The two Windows jobs also upload distinct artifact names (`launcher-win32-x64`,
 `launcher-win32-ia32`); sharing one name makes the second upload fail.
 
-The `win-ia32` files install and open but **cannot play** -- see "32-bit Windows" above.
-They are published from an unplayable build on purpose: a 32-bit player gets the launcher
-and a named explanation instead of a download that silently does nothing.
+The `win-ia32` files play; see "32-bit Windows" above.
 
 Editing `package.json` without changing the version builds nothing; the workflow compares
 against the previous commit first. A manual run builds the current version, and only
@@ -595,8 +540,8 @@ DUNGEON_BLITZ_LOG_PRESENCE=1   # every presence push: payload, area key, dedupe 
 DUNGEON_BLITZ_LOG_NETWORK=1    # every Discord API call the lobby bridge makes, with results
 ```
 
-Every suite runs without Electron, Discord, a game server or a plugin binary: each drives
-the module against a local mock.
+Every suite runs without Electron, Discord, a game server or a Flash Player binary: each
+drives the module against a local mock.
 
 | Suite | What it pins down |
 | --- | --- |
@@ -606,9 +551,13 @@ the module against a local mock.
 | `tools/test-discord-ipc.js` | The RPC framing, `AUTHORIZE` payload and PING/PONG |
 | `tools/test-launcher-status.js` | Every state of the status strip and the account row |
 | `tools/test-install-location.js` | Disk-image and Downloads detection, and what is deliberately not flagged |
+| `tools/test-windows-support.js` | Which Windows versions and architectures start, and the software-rendering fallback |
+| `tools/test-projector.js` | Finding Flash Player, the SWF it opens, the pinned downloads, and the presence and region-latency work done for the game page |
 
 `.github/workflows/tests.yml` runs them on every push and pull request, so a broken Flash
 guard, presence mapping or chat relay fails before an installer is built.
+`.github/workflows/flash-player.yml` downloads and unpacks Flash Player on all three
+platforms whenever the lock file or the fetch script changes.
 
 ## Optional: the game repository
 
@@ -620,19 +569,17 @@ overrides that. Without it the launcher uses its own `social.config.json` and
 
 ## Game window shortcuts
 
-| Key | Effect |
-| --- | --- |
-| `F11` | Toggle full screen |
-| `F5` / `Ctrl+R` | Reload |
-| `Ctrl+Shift+I` | Developer tools |
+The game window is Flash Player's own, so its shortcuts are Flash Player's: `Ctrl+F`
+(`Cmd+F` on macOS) toggles full screen, `Esc` leaves it, and `Ctrl+Q` (`Cmd+Q`) closes the
+game.
 
 ## Security notes
 
 - The launcher shell runs with `contextIsolation: true`, `nodeIntegration: false` and
   plugins disabled; its only contact with the main process is the fixed set of IPC calls in
-  `preload.js` (state, sign-in, forget, play, choose plugin, move to Applications, relaunch,
-  quit) and it loads no remote content at all.
-- Plugins are enabled only in the game window.
-- The game window cannot leave its own origin: `will-navigate` and `new-window` are
-  blocked and handed to the system browser, and `webview` tags are refused.
+  `preload.js` (state, sign-in, forget, play, choose Flash Player, move to Applications,
+  relaunch, quit) and it loads no remote content at all.
+- No window of the launcher hosts Flash. The game runs in Adobe's standalone Flash Player,
+  started on the selected server's SWF only, and that binary is the one whose SHA-256 is
+  pinned in `projector.lock.json`.
 - URLs are limited to `http`/`https`, and any carrying credentials are rejected.

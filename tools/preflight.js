@@ -2,15 +2,14 @@
 'use strict';
 
 /**
- * Checks that a build's target platform has something to run the game on in vendor/ --
- * the standalone Flash Player, or failing that the Flash plugin -- before electron-builder
- * runs.
+ * Checks that a build's target platform has the standalone Flash Player
+ * (flashplayer_32_sa) in vendor/projector/ before electron-builder runs.
  *
- * A package built without the plugin still runs -- the launcher falls back to scanning
- * the player's own Flash installs -- but most players have none: 1.0.3's macOS build
- * shipped that way and landed every player on the refusal dialog. A missing plugin
- * therefore fails the build; a deliberate Flash-less package has to say so with
- * DUNGEON_BLITZ_PREFLIGHT_ALLOW_NO_FLASH=1.
+ * The projector is the game engine. A package without it runs, but can only play if the
+ * player happens to have a Flash Player of their own, and almost nobody does: the packaged
+ * launcher refuses to start instead. 1.0.3's macOS build shipped Flash-less exactly this
+ * way, so a missing projector fails the build; a deliberate Flash-less package has to say
+ * so with DUNGEON_BLITZ_PREFLIGHT_ALLOW_NO_FLASH=1.
  *
  * Usage: node tools/preflight.js [--platform win32|darwin|linux] [--arch x64|ia32]
  */
@@ -18,24 +17,17 @@
 const fs = require('fs');
 const path = require('path');
 
-const { pluginArchitectures } = require('../lib/flash');
+const { macBundleExecutable, parseBinaryArchitectures } = require('../lib/binary');
 const { canExecute, projectorInDirectory } = require('../lib/projector');
 const { findUnpackagedFiles } = require('../lib/packageFiles');
 
 const LAUNCHER_ROOT = path.resolve(__dirname, '..');
-const VENDOR_ROOT = path.join(LAUNCHER_ROOT, 'vendor', 'flash');
 const PROJECTOR_ROOT = path.join(LAUNCHER_ROOT, 'vendor', 'projector');
 
 const EXPECTED_PROJECTOR = {
     win32: 'flashplayer_32_sa.exe',
     darwin: 'Flash Player.app',
     linux: 'flashplayer'
-};
-
-const EXPECTED = {
-    win32: 'pepflashplayer64.dll (or pepflashplayer.dll)',
-    darwin: 'PepperFlashPlayer.plugin',
-    linux: 'libpepflashplayer.so'
 };
 
 function parsePlatform(argv) {
@@ -63,64 +55,6 @@ function parseArch(argv) {
         return String(argv[index + 1]);
     }
     return '';
-}
-
-function describeVendor(platform) {
-    const directory = path.join(VENDOR_ROOT, platform);
-
-    let entries = [];
-    try {
-        entries = fs.readdirSync(directory);
-    } catch {
-        return { directory, found: [] };
-    }
-
-    const found = entries.filter((entry) => /^(pepflashplayer|libpepflashplayer|PepperFlashPlayer)/i.test(entry));
-    return { directory, found };
-}
-
-// A PPAPI plugin is loaded in-process, so the vendored plugin has to match the
-// architecture of the package hosting it. Parse the binary headers and warn loudly rather
-// than shipping a package whose Flash can never start.
-//
-// The Windows targets are x64 and ia32 together, so this compares against the
-// architectures actually configured in package.json rather than an assumed x64: a
-// plugin matching neither is a broken build, and a plugin matching only some of them
-// leaves the rest installing and then refusing to play, which is the 32-bit situation
-// documented in README "32-bit Windows".
-function warnIfArchUnsupported(platform, directory, pluginName, arch) {
-    const architectures = pluginArchitectures(path.join(directory, pluginName));
-    if (!architectures.length) {
-        return;
-    }
-
-    // One architecture per invocation, so the check is against what this run builds.
-    const targets = arch ? [arch] : configuredArchitectures(platform);
-    const matching = targets.filter((target) => architectures.includes(target));
-    if (matching.length === targets.length) {
-        return;
-    }
-
-    const unmatched = targets.filter((target) => !architectures.includes(target));
-
-    if (!matching.length) {
-        console.warn('');
-        console.warn(
-            `[preflight] WARNING: ${pluginName} supports only ${architectures.join('/')}, but the ${platform}`
-        );
-        console.warn(`[preflight] packages are ${targets.join('/')}. No build of this platform can load it.`);
-        console.warn('[preflight] Produce a matching plugin and copy it into vendor/ with `npm run extract-flash`.');
-        console.warn('');
-        return;
-    }
-
-    console.warn('');
-    console.warn(
-        `[preflight] NOTE: ${pluginName} supports ${architectures.join('/')}, so the ${unmatched.join('/')} ` +
-        `package${unmatched.length === 1 ? '' : 's'} for ${platform} install but cannot play.`
-    );
-    console.warn(`[preflight] The ${matching.join('/')} package is unaffected. See README "32-bit Windows".`);
-    console.warn('');
 }
 
 /**
@@ -175,66 +109,40 @@ function checkPackagedFiles() {
     return false;
 }
 
-/**
- * The standalone Flash Player is the game engine; the plugin is only its fallback. A
- * package without the projector still plays -- on the plugin, with the delay the projector
- * exists to remove -- so its absence is a loud warning rather than a failure.
- *
- * @returns {boolean} Whether this platform's package carries a projector it can run.
- */
 function checkProjector(platform, arch) {
     const directory = path.join(PROJECTOR_ROOT, platform);
     const found = projectorInDirectory(directory, platform);
 
     if (found) {
-        const { macBundleExecutable, parseBinaryArchitectures } = require('../lib/flash');
         const executable = platform === 'darwin' ? macBundleExecutable(found) : found;
         const architectures = executable ? parseBinaryArchitectures(executable) : [];
         const targets = arch ? [arch] : configuredArchitectures(platform);
         const unable = targets.filter((target) => !canExecute(architectures, { platform, arch: target }));
         if (unable.length) {
-            console.warn(
-                `[preflight] WARNING: ${path.basename(found)} is ${architectures.join('/')} and cannot run on ${unable.join('/')}.`
+            console.error('');
+            console.error(
+                `[preflight] ERROR: ${path.basename(found)} is ${architectures.join('/')} and cannot run on ${unable.join('/')}.`
             );
+            console.error('');
+            return false;
         }
-        console.log(`[preflight] ${platform}: Flash Player ready -> ${path.basename(found)}`);
-        return true;
-    }
-
-    console.warn('');
-    console.warn(`[preflight] WARNING: no standalone Flash Player for ${platform} in vendor/.`);
-    console.warn(`[preflight] Expected: ${directory}${path.sep}${EXPECTED_PROJECTOR[platform]}`);
-    console.warn('[preflight] This package will run the game on the PPAPI plugin instead, the engine the');
-    console.warn('[preflight] projector replaces. Put it in payload/projector/<platform>/ and rebuild.');
-    console.warn('');
-    return false;
-}
-
-function checkFlash(platform, arch, hasProjector) {
-    const { directory, found } = describeVendor(platform);
-
-    if (found.length) {
-        console.log(`[preflight] ${platform}: Flash plugin (fallback) ready -> ${found.join(', ')}`);
-        warnIfArchUnsupported(platform, directory, found[0], arch);
-        return true;
-    }
-
-    if (hasProjector) {
-        console.log(`[preflight] ${platform}: no Flash plugin fallback; the standalone Flash Player is the engine.`);
+        console.log(
+            `[preflight] ${platform}: Flash Player ready -> ${path.basename(found)}` +
+                (architectures.length ? ` (${architectures.join('/')})` : '')
+        );
         return true;
     }
 
     if (process.env.DUNGEON_BLITZ_PREFLIGHT_ALLOW_NO_FLASH === '1') {
-        console.warn(`[preflight] ${platform}: no Flash plugin in vendor/ -- building anyway, DUNGEON_BLITZ_PREFLIGHT_ALLOW_NO_FLASH=1.`);
+        console.warn(`[preflight] ${platform}: no Flash Player in vendor/ -- building anyway, DUNGEON_BLITZ_PREFLIGHT_ALLOW_NO_FLASH=1.`);
         return true;
     }
 
     console.error('');
-    console.error(`[preflight] ERROR: no Flash plugin for ${platform} in vendor/.`);
-    console.error(`[preflight] Expected: ${directory}${path.sep}${EXPECTED[platform]}`);
-    console.error('[preflight] A package without it cannot play: the packaged launcher refuses to start and');
-    console.error('[preflight] names the build incomplete. Put the plugin in payload/flash/<platform>/ or run');
-    console.error('[preflight] `npm run extract-flash` on this machine, then rebuild.');
+    console.error(`[preflight] ERROR: no standalone Flash Player for ${platform} in vendor/.`);
+    console.error(`[preflight] Expected: ${directory}${path.sep}${EXPECTED_PROJECTOR[platform]}`);
+    console.error('[preflight] A package without it cannot play: the packaged launcher refuses to start.');
+    console.error(`[preflight] Run \`node tools/fetch-projector.js --platform ${platform}\`, then rebuild.`);
     console.error('[preflight] A deliberate Flash-less package needs DUNGEON_BLITZ_PREFLIGHT_ALLOW_NO_FLASH=1.');
     console.error('');
     return false;
@@ -244,7 +152,7 @@ function main() {
     const argv = process.argv.slice(2);
     const platform = parsePlatform(argv);
     const arch = parseArch(argv);
-    if (!EXPECTED[platform]) {
+    if (!EXPECTED_PROJECTOR[platform]) {
         console.error(`[preflight] Unknown platform: ${platform}`);
         console.error('[preflight] Expected one of: win32, darwin, linux');
         process.exit(1);
@@ -252,8 +160,7 @@ function main() {
 
     // Both run either way, so fixing one failure does not hide the other.
     const filesOk = checkPackagedFiles();
-    const projectorOk = checkProjector(platform, arch);
-    const flashOk = checkFlash(platform, arch, projectorOk);
+    const flashOk = checkProjector(platform, arch);
     if (!filesOk || !flashOk) {
         process.exit(1);
     }
