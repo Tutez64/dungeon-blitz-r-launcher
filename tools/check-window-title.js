@@ -44,7 +44,11 @@ public static class T {
 }
 "@
 [T]::Of(${pid}) | ForEach-Object { $_ }`;
-        return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '-'], { input: script, encoding: 'utf8' })
+        const file = path.join(os.tmpdir(), 'db-titles.ps1');
+        require('fs').writeFileSync(file, script);
+        return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file], {
+            encoding: 'utf8'
+        })
             .split(/\r?\n/)
             .filter(Boolean);
     }
