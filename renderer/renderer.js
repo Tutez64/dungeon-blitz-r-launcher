@@ -200,10 +200,11 @@ function installWarning(state) {
 }
 
 /**
- * The two play buttons. FlashBrowser -- the game page with the Flash plugin -- is the main one
- * wherever this system has it; the standalone Flash Player is the second, for players who see
- * a delay collecting loot. Where there is no FlashBrowser (32-bit Windows, Linux) the main
- * button plays in Flash Player and there is no second one.
+ * The two play buttons, always both on screen. The main one is FlashBrowser -- the game page
+ * with the Flash plugin, the default. The second is Legacy: Adobe Flash Player 32, the
+ * standalone player, for players who see a delay collecting loot. Where there is no
+ * FlashBrowser (32-bit Windows, Linux) the main button plays in Flash Player too, so it never
+ * sits there unable to start.
  */
 function playButtons(state) {
     const flash = state.flash || {};
@@ -212,20 +213,15 @@ function playButtons(state) {
     const projectorPlayable = Boolean(flash.armed && !flash.archMismatch && hasServers);
 
     if (!browser.offered) {
-        return { mainEngine: 'projector', mainPlayable: projectorPlayable, alternative: false, projectorPlayable };
+        return { mainEngine: 'projector', mainPlayable: projectorPlayable, projectorPlayable };
     }
-    return {
-        mainEngine: 'flashbrowser',
-        mainPlayable: Boolean(browser.ready && hasServers),
-        alternative: true,
-        projectorPlayable
-    };
+    return { mainEngine: 'flashbrowser', mainPlayable: Boolean(browser.ready && hasServers), projectorPlayable };
 }
 
 function applyPlayButtons(state) {
     const buttons = playButtons(state);
     elements.play.disabled = !buttons.mainPlayable;
-    elements.altEngine.hidden = !buttons.alternative;
+    elements.altEngine.hidden = false;
     elements.playProjector.disabled = !buttons.projectorPlayable;
     return buttons;
 }
@@ -240,15 +236,15 @@ function flashBrowserProblem(state) {
         return {
             message:
                 'The FlashBrowser files were changed after installation, so it will not start. ' +
-                'Reinstall the launcher, or play in Flash Player below.',
+                'Reinstall the launcher, or play Legacy below.',
             severity: 'bad'
         };
     }
     if (!browser.found) {
         return {
             message: browser.locked
-                ? 'FlashBrowser is missing from this install. Reinstall the launcher, or play in Flash Player below.'
-                : 'FlashBrowser is missing. Run `npm run fetch-flash-browser`, or play in Flash Player below.',
+                ? 'FlashBrowser is missing from this install. Reinstall the launcher, or play Legacy below.'
+                : 'FlashBrowser is missing. Run `npm run fetch-flash-browser`, or play Legacy below.',
             severity: 'warn'
         };
     }
@@ -259,7 +255,7 @@ function flashBrowserProblem(state) {
 // player out of the game, or how far the sign-in has got.
 function statusLine(state) {
     if (state.gameRunning) {
-        return state.gameEngine === 'projector' ? 'The game is running in Flash Player.' : 'The game is running.';
+        return state.gameEngine === 'projector' ? 'The game is running (Legacy).' : 'The game is running.';
     }
     if (state.discord.loginPending) {
         return 'Finish signing in in your browser...';

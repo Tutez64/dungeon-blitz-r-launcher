@@ -60,11 +60,11 @@ The launcher window has two play buttons:
 | Button | Engine | For |
 | --- | --- | --- |
 | **Open the game** | FlashBrowser: the game page with FlashBrowser's PPAPI Flash plugin, in a Chromium 87 window | Everyone; the default |
-| **Open in Flash Player** | Adobe's standalone Flash Player (`flashplayer_32_sa`) | Players who see a delay collecting loot in FlashBrowser |
+| **Play Legacy (Adobe Flash Player 32)** | Adobe's standalone Flash Player (`flashplayer_32_sa`) | Players who see a delay collecting loot in FlashBrowser |
 
-The launcher remembers the button a player last pressed, and a remembered player's automatic
-start at launch uses it. 32-bit Windows and Linux have no FlashBrowser (there is no plugin for
-them), so there the one button plays in Flash Player.
+Both buttons are always on screen. The launcher remembers the button a player last pressed,
+and a remembered player's automatic start at launch uses it. 32-bit Windows and Linux have no
+FlashBrowser (there is no plugin for them), so there the main button plays Legacy as well.
 
 ### FlashBrowser (default)
 
@@ -103,7 +103,7 @@ page, as they always did in a browser. `lib/gameHost.js` stays off.
 | --- | --- |
 | `win32-x64` | Windows x64 packages; Windows on Arm runs it under emulation |
 | `darwin-x64` | The macOS package; Apple Silicon runs it under Rosetta |
-| none | 32-bit Windows and Linux: Flash Player only |
+| none | 32-bit Windows and Linux: both buttons play Legacy |
 
 The `FlashBrowser` workflow assembles it on Windows and macOS whenever the lock file, the
 game-window app, the plugin or the fetch script change. It then starts it exactly as the
@@ -117,7 +117,7 @@ build one anyway; that package plays in Flash Player.
 
 ### The standalone Flash Player
 
-The second button runs the game in **Adobe Flash Player itself** -- `flashplayer_32_sa`,
+The **Legacy** button runs the game in **Adobe Flash Player itself** -- `flashplayer_32_sa`,
 the standalone player Adobe calls the projector. The launcher starts it on the game's SWF,
 straight from the selected server:
 
@@ -131,7 +131,7 @@ browser plugins do.
 
 The PPAPI plugin in FlashBrowser sits behind Chromium's plugin host, compositor and IPC.
 Some players feel that as input and frame delay, most of all when collecting loot. Flash
-Player has none of it, which is what the second button is for.
+Player has none of it, which is what the Legacy button is for.
 
 | Platform | What ships | Notes |
 | --- | --- | --- |
@@ -244,7 +244,7 @@ Hovering a value shows the detail: the local presence endpoint, or the last erro
 
 Machine and engine details are not rows. A missing, changed or unrunnable FlashBrowser or
 Flash Player, or a Windows that is too old, is said in the problem banner above the strip
-instead. A FlashBrowser problem points at the Flash Player button, which still plays. `main.js`
+instead. A FlashBrowser problem points at the Legacy button, which still plays. `main.js`
 prints the Flash Player line on the console, and `node tools/test-launcher-status.js`
 checks every state of the strip and the banner.
 
@@ -348,7 +348,7 @@ The Windows targets build `ia32` as well as `x64`, so the releases page carries
 `-win-ia32-setup.exe` and `-win-ia32-portable.exe`. **They play**, in Flash Player only:
 `flashplayer_32_sa.exe` is itself a 32-bit program in its own process, so it runs on 32-bit
 and 64-bit Windows alike. FlashBrowser needs the x64 plugin and an x64 Electron, so the ia32
-packages carry none and show a single play button.
+packages carry none and both buttons play Legacy.
 
 Up to 1.0.16, the 32-bit installers opened and then refused to play. The game ran in an
 x86_64 PPAPI plugin loaded *into* the launcher process, and a 32-bit process cannot load

@@ -91,7 +91,7 @@ const gameHost = new GameHost({ presence });
 
 // The two game engines. FlashBrowser -- the game page with FlashBrowser's PPAPI Flash plugin,
 // in a Chromium 87 window (lib/flashBrowser.js) -- is the default. Adobe's standalone Flash
-// Player (lib/projector.js) is the second button, for players who see a delay collecting
+// Player (lib/projector.js) is the Legacy button, for players who see a delay collecting
 // loot in the plugin.
 const ENGINES = ['flashbrowser', 'projector'];
 
@@ -192,15 +192,15 @@ function preferredEngine() {
 function engineProblem(engine) {
     if (engine === 'flashbrowser') {
         if (!flashBrowser.offered) {
-            return 'FlashBrowser is not available on this system. Play in Flash Player instead.';
+            return 'FlashBrowser is not available on this system. Play Legacy instead.';
         }
         if (flashBrowser.tampered) {
-            return `${flashBrowser.tamperReason}. Reinstall the launcher, or play in Flash Player.`;
+            return `${flashBrowser.tamperReason}. Reinstall the launcher, or play Legacy.`;
         }
         if (!flashBrowser.found) {
             return app.isPackaged
-                ? 'FlashBrowser is missing from this install. Reinstall the launcher, or play in Flash Player.'
-                : 'FlashBrowser is missing. Run `npm run fetch-flash-browser`, or play in Flash Player.';
+                ? 'FlashBrowser is missing from this install. Reinstall the launcher, or play Legacy.'
+                : 'FlashBrowser is missing. Run `npm run fetch-flash-browser`, or play Legacy.';
         }
         return '';
     }
@@ -671,7 +671,7 @@ async function launchFlashBrowser(serverUrl) {
             flashBrowser.tampered = true;
             flashBrowser.tamperReason = check.reason;
             console.log(`[FlashBrowser] REFUSED: ${check.reason}`);
-            return { ok: false, message: `${check.reason}. Reinstall the launcher, or play in Flash Player.` };
+            return { ok: false, message: `${check.reason}. Reinstall the launcher, or play Legacy.` };
         }
     }
 

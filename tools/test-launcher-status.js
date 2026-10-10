@@ -189,7 +189,7 @@ async function checkPlayButtons(render, registry, plays) {
     // Windows x64 and macOS: FlashBrowser is the main button, Flash Player the second one.
     render(baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: READY_BROWSER }));
     assert.strictEqual(registry.get('play').disabled, false, 'FlashBrowser can be started');
-    assert.strictEqual(registry.get('alt-engine').hidden, false, 'the Flash Player button is offered next to it');
+    assert.strictEqual(registry.get('alt-engine').hidden, false, 'the Legacy button is offered next to it');
     assert.strictEqual(registry.get('play-projector').disabled, false);
     assert.strictEqual(registry.get('problem').hidden, true);
     plays.length = 0;
@@ -197,13 +197,20 @@ async function checkPlayButtons(render, registry, plays) {
     await press('play-projector');
     assert.deepStrictEqual(plays, ['flashbrowser', 'projector'], 'each button starts its own engine');
 
-    // 32-bit Windows and Linux have no FlashBrowser: one button, and it plays in Flash Player.
+    // 32-bit Windows and Linux have no FlashBrowser: Legacy is still offered, and the main
+    // button plays in Flash Player rather than sitting there unable to start.
     render(baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: { offered: false, found: false, ready: false, missing: [] } }));
-    assert.strictEqual(registry.get('alt-engine').hidden, true, 'no second button without FlashBrowser');
+    assert.strictEqual(registry.get('alt-engine').hidden, false, 'the Legacy button is always offered');
     assert.strictEqual(registry.get('play').disabled, false);
+    assert.strictEqual(registry.get('play-projector').disabled, false);
     plays.length = 0;
     await press('play');
-    assert.deepStrictEqual(plays, ['projector'], 'the only button plays in Flash Player');
+    await press('play-projector');
+    assert.deepStrictEqual(plays, ['projector', 'projector'], 'both buttons play in Flash Player');
+
+    // A state from an older main process (no flashBrowser at all) still shows Legacy.
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL));
+    assert.strictEqual(registry.get('alt-engine').hidden, false);
 
     // An install whose FlashBrowser is gone: said in the banner, and Flash Player still plays.
     render(
@@ -214,7 +221,7 @@ async function checkPlayButtons(render, registry, plays) {
     assert.strictEqual(registry.get('play').disabled, true, 'a missing FlashBrowser cannot be started');
     assert.strictEqual(registry.get('play-projector').disabled, false, 'Flash Player still can');
     assert.ok(registry.get('problem').textContent.includes('FlashBrowser is missing'), registry.get('problem').textContent);
-    assert.ok(registry.get('problem').textContent.includes('Flash Player'), 'the banner points at the other button');
+    assert.ok(registry.get('problem').textContent.includes('Legacy'), 'the banner points at the Legacy button');
 
     // A FlashBrowser changed after installation is refused, the same as a changed Flash Player.
     render(baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: { ...READY_BROWSER, ready: false, tampered: true } }));
@@ -230,11 +237,11 @@ async function checkPlayButtons(render, registry, plays) {
     // Which engine the game is running in shows in the status line.
     render(baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: READY_BROWSER }));
     render({ ...baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: READY_BROWSER, gameEngine: 'projector' }), gameRunning: true });
-    assert.strictEqual(registry.get('status').textContent, 'The game is running in Flash Player.');
+    assert.strictEqual(registry.get('status').textContent, 'The game is running (Legacy).');
     render({ ...baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: READY_BROWSER, gameEngine: 'flashbrowser' }), gameRunning: true });
     assert.strictEqual(registry.get('status').textContent, 'The game is running.');
 
-    console.log('[test-launcher-status] FlashBrowser is the main button and Flash Player the second: OK');
+    console.log('[test-launcher-status] FlashBrowser is the main button and Legacy is always offered: OK');
 }
 
 async function main() {
