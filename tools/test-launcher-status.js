@@ -25,6 +25,7 @@ class StubElement {
         this.className = '';
         this.textContent = '';
         this.title = '';
+        this.value = '';
         this.listeners = {};
     }
 
@@ -62,6 +63,8 @@ function loadRenderer() {
     };
 
     let render = null;
+    // Which engine each press of a play button asked for.
+    const plays = [];
     const window = {
         launcher: {
             onState: (handler) => {
@@ -69,8 +72,19 @@ function loadRenderer() {
             },
             // The test drives render() itself, so the initial fetch never settles.
             getState: () => new Promise(() => {}),
-            play: async () => ({ ok: true }),
+            play: async (engine) => {
+                plays.push(engine);
+                return { ok: true };
+            },
             discordLogin: async () => ({ ok: true }),
+            submitLoginCode: async (code) => {
+                plays.push(`code:${code}`);
+                return { ok: true };
+            },
+            copySignInLink: async () => {
+                plays.push('copy-sign-in-link');
+                return { ok: true };
+            },
             forgetDiscordLogin: async () => null,
             browseFlash: async () => null,
             moveToApplications: async () => ({ ok: true }),
@@ -84,7 +98,7 @@ function loadRenderer() {
     vm.runInNewContext(source, { document, window, console });
 
     assert.ok(render, 'renderer.js must register a state handler');
-    return { render, registry };
+    return { render, registry, plays };
 }
 
 function rowsFrom(registry) {
@@ -108,7 +122,9 @@ function baseState(flash, social, extra = {}) {
         selectedServerUrl: 'http://example.test/',
         serverReachable: true,
         gameRunning: false,
+        gameEngine: extra.gameEngine || '',
         flash,
+        flashBrowser: extra.flashBrowser,
         social,
         presence: extra.presence || {
             running: false,
@@ -160,6 +176,8 @@ const MISSING_FLASH = {
     archMismatch: false
 };
 
+const READY_BROWSER = { offered: true, found: true, ready: true, locked: true, tampered: false, missing: [] };
+
 const IDLE_SOCIAL = {
     enabled: true,
     running: false,
@@ -169,8 +187,131 @@ const IDLE_SOCIAL = {
     lastStatus: ''
 };
 
-function main() {
-    const { render, registry } = loadRenderer();
+/** The two play buttons: FlashBrowser first wherever there is one, Flash Player second. */
+async function checkPlayButtons(render, registry, plays) {
+    const press = async (id) => {
+        await registry.get(id).listeners.click();
+        // playWith() awaits the play() call; let it settle.
+        await new Promise((resolve) => setImmediate(resolve));
+    };
+
+    // Windows x64 and macOS: FlashBrowser is the main button, Flash Player the second one.
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: READY_BROWSER }));
+    assert.strictEqual(registry.get('play').disabled, false, 'FlashBrowser can be started');
+    assert.strictEqual(registry.get('alt-engine').hidden, false, 'the Legacy button is offered next to it');
+    assert.strictEqual(registry.get('play-projector').disabled, false);
+    assert.strictEqual(registry.get('problem').hidden, true);
+    plays.length = 0;
+    await press('play');
+    await press('play-projector');
+    assert.deepStrictEqual(plays, ['flashbrowser', 'projector'], 'each button starts its own engine');
+
+    // 32-bit Windows and Linux have no FlashBrowser: Legacy is still offered, and the main
+    // button plays in Flash Player rather than sitting there unable to start.
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: { offered: false, found: false, ready: false, missing: [] } }));
+    assert.strictEqual(registry.get('alt-engine').hidden, false, 'the Legacy button is always offered');
+    assert.strictEqual(registry.get('play').disabled, false);
+    assert.strictEqual(registry.get('play-projector').disabled, false);
+    plays.length = 0;
+    await press('play');
+    await press('play-projector');
+    assert.deepStrictEqual(plays, ['projector', 'projector'], 'both buttons play in Flash Player');
+
+    // A state from an older main process (no flashBrowser at all) still shows Legacy.
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL));
+    assert.strictEqual(registry.get('alt-engine').hidden, false);
+
+    // An install whose FlashBrowser is gone: said in the banner, and Flash Player still plays.
+    render(
+        baseState(ARMED_FLASH, IDLE_SOCIAL, {
+            flashBrowser: { offered: true, found: false, ready: false, locked: true, tampered: false, missing: [] }
+        })
+    );
+    assert.strictEqual(registry.get('play').disabled, true, 'a missing FlashBrowser cannot be started');
+    assert.strictEqual(registry.get('play-projector').disabled, false, 'Flash Player still can');
+    assert.ok(registry.get('problem').textContent.includes('FlashBrowser is missing'), registry.get('problem').textContent);
+    assert.ok(registry.get('problem').textContent.includes('Legacy'), 'the banner points at the Legacy button');
+
+    // A FlashBrowser changed after installation is refused, the same as a changed Flash Player.
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: { ...READY_BROWSER, ready: false, tampered: true } }));
+    assert.strictEqual(registry.get('play').disabled, true);
+    assert.ok(registry.get('problem').textContent.includes('changed after installation'));
+    assert.strictEqual(registry.get('problem').className, 'problem bad');
+
+    // A broken Flash Player leaves FlashBrowser playable.
+    render(baseState({ ...ARMED_FLASH, armed: false, locked: true, tampered: true }, IDLE_SOCIAL, { flashBrowser: READY_BROWSER }));
+    assert.strictEqual(registry.get('play').disabled, false);
+    assert.strictEqual(registry.get('play-projector').disabled, true);
+
+    // Which engine the game is running in shows in the status line.
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: READY_BROWSER }));
+    render({ ...baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: READY_BROWSER, gameEngine: 'projector' }), gameRunning: true });
+    assert.strictEqual(registry.get('status').textContent, 'The game is running (Legacy).');
+    render({ ...baseState(ARMED_FLASH, IDLE_SOCIAL, { flashBrowser: READY_BROWSER, gameEngine: 'flashbrowser' }), gameRunning: true });
+    assert.strictEqual(registry.get('status').textContent, 'The game is running.');
+
+    console.log('[test-launcher-status] FlashBrowser is the main button and Legacy is always offered: OK');
+}
+
+/** While a sign-in waits on the browser, its link can be copied -- and only then. */
+async function checkCopySignInLink(render, registry, plays) {
+    const pending = { linked: false, email: '', name: '', remembered: false, loginPending: true, loginLinkAvailable: true };
+
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { discord: pending }));
+    assert.strictEqual(registry.get('copy-login').hidden, false, 'a pending sign-in offers its link');
+    assert.strictEqual(registry.get('status').textContent, 'Finish signing in in your browser...');
+
+    plays.length = 0;
+    await registry.get('copy-login').listeners.click();
+    assert.deepStrictEqual(plays, ['copy-sign-in-link'], 'the button copies the link');
+    assert.ok(registry.get('copy-login').textContent.includes('copied'), 'and says so');
+
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL));
+    assert.strictEqual(registry.get('copy-login').hidden, true, 'no sign-in in progress, no link');
+    assert.ok(registry.get('copy-login').textContent.includes("Browser didn't open"), 'the label resets for the next sign-in');
+
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { discord: { ...pending, loginLinkAvailable: false } }));
+    assert.strictEqual(registry.get('copy-login').hidden, true, 'nothing to copy, no button');
+
+    console.log('[test-launcher-status] a pending sign-in offers its link to copy: OK');
+}
+
+/** A launcher the server cannot match by address asks for the code the browser page shows. */
+async function checkLoginCode(render, registry, plays) {
+    const pending = { linked: false, email: '', name: '', remembered: false, loginPending: true, loginLinkAvailable: true };
+
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { discord: pending }));
+    assert.strictEqual(registry.get('login-code').hidden, true, 'no code box until the server asks');
+
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { discord: { ...pending, loginCodeRequired: true } }));
+    assert.strictEqual(registry.get('login-code').hidden, false, 'the server asked: the box appears');
+    assert.strictEqual(registry.get('login-code-error').hidden, true);
+    assert.strictEqual(registry.get('status').textContent, 'Enter the code from your browser.');
+
+    plays.length = 0;
+    registry.get('login-code-input').value = ' k7qm-4xpa ';
+    await registry.get('login-code-submit').listeners.click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepStrictEqual(plays, ['code:k7qm-4xpa'], 'Confirm sends what was typed');
+
+    plays.length = 0;
+    await registry.get('login-code-input').listeners.keydown({ key: 'Enter' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepStrictEqual(plays, ['code:k7qm-4xpa'], 'and so does Enter');
+
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { discord: { ...pending, loginCodeRequired: true, loginCodeRejected: true } }));
+    assert.strictEqual(registry.get('login-code-error').hidden, false, 'a wrong code is said');
+
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { discord: { ...pending, loginPending: false, loginCodeEnded: true } }));
+    assert.strictEqual(registry.get('login-code').hidden, true);
+    assert.strictEqual(registry.get('login-code-input').value, '', 'the box is emptied when it goes away');
+    assert.ok(registry.get('problem').textContent.includes('Too many wrong codes'), 'too many wrong codes end the sign-in, and say so');
+
+    console.log('[test-launcher-status] a launcher at another address asks for the browser code: OK');
+}
+
+async function main() {
+    const { render, registry, plays } = loadRenderer();
 
     // Armed plugin, Discord reached, lobby chat connected, chat mirror running.
     render(
@@ -393,7 +534,14 @@ function main() {
     assert.strictEqual(registry.get('move-app').hidden, true);
 
     console.log('[test-launcher-status] status rows and the account row render correctly in every state');
+
+    await checkPlayButtons(render, registry, plays);
+    await checkCopySignInLink(render, registry, plays);
+    await checkLoginCode(render, registry, plays);
     console.log('[test-launcher-status] all assertions passed');
 }
 
-main();
+main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+});

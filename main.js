@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, shell } = require('electron');
 
 const { ChatRelay } = require('./lib/chatRelay');
 const { GameStats } = require('./lib/gameStats');
@@ -11,6 +11,7 @@ const { createLauncherSessionRecovery } = require('./lib/launcherSessionRecovery
 const discordAuth = require('./lib/discordAuth');
 const { exists, inspectInstallLocation, isWritableDirectory } = require('./lib/install');
 const { GameHost } = require('./lib/gameHost');
+const { findFlashBrowser, prepareFlashBrowserLaunch, verifyFlashBrowser } = require('./lib/flashBrowser');
 const { verifyProjector } = require('./lib/integrity');
 const { findProjector, findVendoredProjector, isChosenProjector, prepareLaunch, resolveSwfUrl } = require('./lib/projector');
 const { keepGameTitle } = require('./lib/windowTitle');
@@ -84,14 +85,32 @@ const gameStats = new GameStats();
 gameStats.on('state', () => pushState());
 
 // While the game runs in the standalone projector, the launcher does what the game page's
-// script would have: rich presence and region latency (lib/gameHost.js).
+// script would have: rich presence and region latency (lib/gameHost.js). FlashBrowser runs
+// the page itself, so it needs none of this.
 const gameHost = new GameHost({ presence });
 
+// The two game engines. FlashBrowser -- the game page with FlashBrowser's PPAPI Flash plugin,
+// in a Chromium 87 window (lib/flashBrowser.js) -- is the default. Adobe's standalone Flash
+// Player (lib/projector.js) is the Legacy button, for players who see a delay collecting
+// loot in the plugin.
+const ENGINES = ['flashbrowser', 'projector'];
+
 let launcherWindow = null;
-// The standalone Flash Player running the game.
+// The program running the game -- FlashBrowser or the standalone Flash Player -- and which
+// of the two it is.
 let gameProcess = null;
+let gameEngine = '';
 let loginWatcher = null;
+// The browser address of the sign-in in progress, for the "Copy sign-in link" button. It names
+// the sign-in's key by hash only, so it is safe to put on the clipboard.
+let loginLink = '';
+// Whether the server wants the code the browser page shows (the launcher is not at the
+// browser's address), whether the last one entered was wrong, and whether too many wrong ones
+// ended the sign-in. `pendingLoginCode` is a code the player entered, sent once.
+let loginCode = { required: false, rejected: false, ended: false };
+let pendingLoginCode = '';
 let projector = null;
+let flashBrowser = { offered: false, target: '', found: null, partial: null, tampered: false, tamperReason: '' };
 let discordAccount = { linked: false, email: '', name: '' };
 let remembered = false;
 let serverReachable = null;
@@ -128,21 +147,104 @@ function locateProjector(preferredPath) {
 }
 
 /**
- * Whether the game can be started: there is a standalone Flash Player this machine can
- * run. The projector is the game engine -- Adobe's own Flash Player, in its own process and
- * window -- and the only one; the PPAPI plugin inside Chromium it replaced is gone.
+ * Finds FlashBrowser for this machine. A packaged launcher checks it against the
+ * fingerprint the build packed into the app, exactly as it does its Flash Player; a
+ * development checkout runs whatever tools/fetch-flash-browser.js put in vendor/.
+ */
+function locateFlashBrowser() {
+    const located = { ...findFlashBrowser(), tampered: false, tamperReason: '' };
+    if (located.found && app.isPackaged) {
+        const check = verifyFlashBrowser(located.found.root, { target: located.target });
+        located.tampered = !check.ok;
+        located.tamperReason = check.reason;
+    }
+    return located;
+}
+
+/**
+ * Whether the game can be started in the standalone Flash Player: there is one this machine
+ * can run -- Adobe's own Flash Player, in its own process and window.
  */
 function projectorReady() {
     return Boolean(projector && !projector.archMismatch && !projector.tampered);
+}
+
+/** Whether the game can be started in FlashBrowser, the default engine. */
+function flashBrowserReady() {
+    return Boolean(flashBrowser.found && !flashBrowser.tampered);
+}
+
+/**
+ * The engine a plain "play" uses -- the start-up play of a remembered player, and the play
+ * after a sign-in: the one the player last picked with a button, as long as it can run;
+ * otherwise FlashBrowser, the default; otherwise the standalone Flash Player.
+ */
+function preferredEngine() {
+    const saved = state.read().engine;
+    if (saved === 'projector' && projectorReady()) {
+        return 'projector';
+    }
+    if (saved === 'flashbrowser' && flashBrowserReady()) {
+        return 'flashbrowser';
+    }
+    if (flashBrowserReady()) {
+        return 'flashbrowser';
+    }
+    if (projectorReady()) {
+        return 'projector';
+    }
+    return flashBrowser.offered ? 'flashbrowser' : 'projector';
+}
+
+/** Why an engine cannot start the game right now, or '' when it can. */
+function engineProblem(engine) {
+    if (engine === 'flashbrowser') {
+        if (!flashBrowser.offered) {
+            return 'FlashBrowser is not available on this system. Play Legacy instead.';
+        }
+        if (flashBrowser.tampered) {
+            return `${flashBrowser.tamperReason}. Reinstall the launcher, or play Legacy.`;
+        }
+        if (!flashBrowser.found) {
+            return app.isPackaged
+                ? 'FlashBrowser is missing from this install. Reinstall the launcher, or play Legacy.'
+                : 'FlashBrowser is missing. Run `npm run fetch-flash-browser`, or play Legacy.';
+        }
+        return '';
+    }
+
+    if (!projector) {
+        return 'Flash Player is missing. Choose the standalone Flash Player (flashplayer_32_sa) by hand.';
+    }
+    if (projector.archMismatch) {
+        return `Flash Player is a ${projector.architectures.join('/')} program and cannot run on this machine.`;
+    }
+    if (projector.tampered) {
+        return `${projector.tamperReason}. Reinstall the launcher to play.`;
+    }
+    return '';
 }
 
 function gameRunning() {
     return Boolean(gameProcess);
 }
 
-// The projector is found once at startup and again whenever the player picks one by hand.
-// It is started fresh for every game, so a new choice applies on the next play.
+// Both engines are found once at startup, and the projector again whenever the player picks
+// one by hand. Each is started fresh for every game, so a new choice applies on the next play.
 function findFlashPlayer() {
+    flashBrowser = locateFlashBrowser();
+    if (flashBrowser.found) {
+        console.log(`[FlashBrowser] ${flashBrowser.target} at ${flashBrowser.found.root}`);
+        if (flashBrowser.tampered) {
+            console.log(`[FlashBrowser] REFUSED: ${flashBrowser.tamperReason}. Reinstall the launcher.`);
+        }
+    } else if (flashBrowser.offered) {
+        const missing = flashBrowser.partial ? ` (missing ${flashBrowser.partial.missing.join(', ')})` : '';
+        console.log(`[FlashBrowser] Not found for ${flashBrowser.target}${missing}; the game runs in Flash Player.`);
+    } else {
+        console.log(`[FlashBrowser] None for ${process.platform}-${process.arch}; the game runs in Flash Player.`);
+    }
+
     projector = locateProjector(state.read().projectorPath);
     if (!projector) {
         console.log('[Flash] No standalone Flash Player found; the launcher will ask for one.');
@@ -175,18 +277,18 @@ function resolveSelectedServer() {
 }
 
 /**
- * A packaged launcher always carries its own Flash Player. One that does not is an
- * incomplete build -- a stale install, or a package assembled without running
- * tools/fetch-projector -- and it can never play unless the player happens to have a
- * Flash Player of their own. Refusing to start says so outright instead of leaving players
- * on a sign-in screen that leads nowhere.
+ * A packaged launcher always carries its own Flash Player (and, where there is one, its
+ * FlashBrowser). One that can run neither is an incomplete build -- a stale install, or a
+ * package assembled without running tools/fetch-projector -- and it can never play unless
+ * the player happens to have a Flash Player of their own. Refusing to start says so outright
+ * instead of leaving players on a sign-in screen that leads nowhere.
  *
  * A development checkout is exempt: there, a missing Flash Player is one
  * `npm run fetch-projector` away and the window already explains it.
  * DUNGEON_BLITZ_ALLOW_NO_FLASH=1 keeps a deliberately Flash-less build startable.
  */
 function buildIsPlayable() {
-    if (!app.isPackaged || projectorReady()) {
+    if (!app.isPackaged || projectorReady() || flashBrowserReady()) {
         return true;
     }
     return process.env.DUNGEON_BLITZ_ALLOW_NO_FLASH === '1';
@@ -297,6 +399,20 @@ function flashStatus() {
     };
 }
 
+/** FlashBrowser, the default engine, in the launcher state. */
+function flashBrowserStatus() {
+    return {
+        // Whether this system has a FlashBrowser build at all: Windows x64 and macOS do; 32-bit
+        // Windows and Linux play in Flash Player only.
+        offered: Boolean(flashBrowser.offered),
+        found: Boolean(flashBrowser.found),
+        ready: flashBrowserReady(),
+        locked: app.isPackaged,
+        tampered: Boolean(flashBrowser.tampered),
+        missing: flashBrowser.partial ? flashBrowser.partial.missing.slice() : []
+    };
+}
+
 /** Which Windows this is, in the launcher state: what this machine is and what it can do. */
 function windowsStatus() {
     return {
@@ -345,8 +461,11 @@ function launcherState() {
         selectedServerUrl: selected ? selected.url : '',
         serverReachable,
         gameRunning: gameRunning(),
+        gameEngine,
+        engine: preferredEngine(),
         windows: windowsStatus(),
         flash: flashStatus(),
+        flashBrowser: flashBrowserStatus(),
         presence: presenceSummary(),
         social: socialSummary(),
         chat: chatSummary(),
@@ -365,7 +484,11 @@ function launcherState() {
         discord: {
             ...discordAccount,
             remembered,
-            loginPending: Boolean(loginWatcher)
+            loginPending: Boolean(loginWatcher),
+            loginLinkAvailable: Boolean(loginWatcher && loginLink),
+            loginCodeRequired: Boolean(loginWatcher && loginCode.required),
+            loginCodeRejected: Boolean(loginWatcher && loginCode.rejected),
+            loginCodeEnded: Boolean(!loginWatcher && loginCode.ended)
         }
     };
 }
@@ -418,7 +541,8 @@ function createLauncherWindow() {
             // preload.js needs nothing but contextBridge and ipcRenderer, both of which a
             // sandboxed preload has.
             sandbox: true,
-            // The launcher shell hosts no plugins; the game runs in the standalone Flash Player.
+            // The launcher shell hosts no plugins; the game runs in FlashBrowser or the
+            // standalone Flash Player, each its own program.
             plugins: false,
             // No developer tools in an installed launcher: they are a console onto the IPC
             // calls that start the game.
@@ -454,11 +578,46 @@ function endGameSession() {
     if (launcherWindow && !launcherWindow.isDestroyed()) {
         launcherWindow.show();
     } else if (!BrowserWindow.getAllWindows().length && process.platform !== 'darwin') {
-        // The player closed the launcher while playing; with Flash Player gone too there is
+        // The player closed the launcher while playing; with the game gone too there is
         // nothing left open, which is when the launcher has always quit.
         app.quit();
     }
     pushState();
+}
+
+/**
+ * Starts the program that runs the game, and ends the game session when it exits.
+ *
+ * @param {string} label How the console names it.
+ * @returns {Promise<{ ok: boolean, message?: string, child?: import('child_process').ChildProcess }>}
+ */
+async function spawnGame(engine, label, { command, args, cwd, env }) {
+    let child;
+    try {
+        child = spawn(command, args, { stdio: 'ignore', windowsHide: false, cwd, env });
+    } catch (error) {
+        return { ok: false, message: `${label} could not be started: ${(error && error.message) || error}` };
+    }
+
+    // A spawn that fails (a missing or non-executable file) leaves no pid and reports why
+    // as an 'error' on the next tick.
+    if (!child.pid) {
+        const error = await new Promise((resolve) => child.once('error', resolve));
+        return { ok: false, message: `${label} could not be started: ${(error && error.message) || error}` };
+    }
+    child.on('error', (error) => console.log(`[${label}] ${(error && error.message) || error}`));
+
+    gameProcess = child;
+    gameEngine = engine;
+    child.once('exit', (code, signal) => {
+        console.log(`[${label}] exited (${signal || `code ${code}`})`);
+        if (gameProcess === child) {
+            gameProcess = null;
+            gameEngine = '';
+            endGameSession();
+        }
+    });
+    return { ok: true, child };
 }
 
 /**
@@ -493,34 +652,54 @@ async function launchProjector(serverUrl, settings) {
     const { command, args, cwd, env } = launch;
     console.log(`[Flash] Starting ${command} ${args.join(' ')}${cwd ? ` in ${cwd}` : ''} for ${swfUrl}`);
 
-    let child;
-    try {
-        child = spawn(command, args, { stdio: 'ignore', windowsHide: false, cwd, env });
-    } catch (error) {
-        return { ok: false, message: `Flash Player could not be started: ${(error && error.message) || error}` };
+    const started = await spawnGame('projector', 'Flash Player', { command, args, cwd, env });
+    if (!started.ok) {
+        return started;
     }
 
-    // A spawn that fails (a missing or non-executable file) leaves no pid and reports why
-    // as an 'error' on the next tick.
-    if (!child.pid) {
-        const error = await new Promise((resolve) => child.once('error', resolve));
-        return { ok: false, message: `Flash Player could not be started: ${(error && error.message) || error}` };
-    }
-    child.on('error', (error) => console.log(`[Flash] Flash Player: ${(error && error.message) || error}`));
-
-    gameProcess = child;
     // The window says "Dungeon Blitz: R", never Flash Player's name or the game's address.
-    const title = keepGameTitle(child.pid);
-    child.once('exit', (code, signal) => {
-        title.stop();
-        console.log(`[Flash] Flash Player exited (${signal || `code ${code}`})`);
-        if (gameProcess === child) {
-            gameProcess = null;
-            endGameSession();
-        }
-    });
+    const title = keepGameTitle(started.child.pid);
+    started.child.once('exit', () => title.stop());
 
     gameHost.start({ serverUrl, presence: Boolean(settings.startDiscordBridge) });
+    startAccountPolling();
+    return { ok: true };
+}
+
+/**
+ * Opens the game page in FlashBrowser: Electron 11 with FlashBrowser's PPAPI Flash plugin,
+ * started as its own program because the launcher's Chromium can no longer host the plugin.
+ *
+ * The page runs its own script there -- rich presence, region latency and the in-game Discord
+ * sign-in -- exactly as it did in the launcher's old game window, so lib/gameHost.js stays off.
+ *
+ * @returns {Promise<{ ok: boolean, message?: string }>}
+ */
+async function launchFlashBrowser(serverUrl) {
+    const found = flashBrowser.found;
+    if (app.isPackaged) {
+        const check = verifyFlashBrowser(found.root, { target: flashBrowser.target });
+        if (!check.ok) {
+            flashBrowser.tampered = true;
+            flashBrowser.tamperReason = check.reason;
+            console.log(`[FlashBrowser] REFUSED: ${check.reason}`);
+            return { ok: false, message: `${check.reason}. Reinstall the launcher, or play Legacy.` };
+        }
+    }
+
+    const launch = prepareFlashBrowserLaunch(found, {
+        gameUrl: serverUrl,
+        // Its own profile: two Chromium versions must never share one.
+        userDataDir: path.join(app.getPath('userData'), 'flashbrowser'),
+        devTools: !app.isPackaged
+    });
+    console.log(`[FlashBrowser] Starting ${launch.command} for ${serverUrl}`);
+
+    const started = await spawnGame('flashbrowser', 'FlashBrowser', launch);
+    if (!started.ok) {
+        return started;
+    }
+    // Whoever the game ends up signing in as is remembered for the next launch.
     startAccountPolling();
     return { ok: true };
 }
@@ -529,6 +708,7 @@ function stopGameProcess() {
     if (gameProcess) {
         const child = gameProcess;
         gameProcess = null;
+        gameEngine = '';
         try {
             child.kill();
         } catch {
@@ -537,9 +717,14 @@ function stopGameProcess() {
     }
 }
 
-async function play(serverId) {
+/**
+ * @param {{ engine?: string, serverId?: string }} [options] `engine` is the button the player
+ *   pressed ('flashbrowser' or 'projector'), and is remembered for the next plain play; without
+ *   it the preferred engine runs.
+ */
+async function play({ engine: requested = '', serverId = '' } = {}) {
     if (gameProcess) {
-        // Flash Player's window is its own; it is already open.
+        // The game's window is its own program's; it is already open.
         return { ok: true };
     }
 
@@ -551,23 +736,15 @@ async function play(serverId) {
     if (!selected) {
         return { ok: false, message: 'No servers configured. Check servers.json.' };
     }
-    if (!projector) {
-        return {
-            ok: false,
-            message: 'Flash Player is missing. Choose the standalone Flash Player (flashplayer_32_sa) by hand.'
-        };
-    }
-    if (projector.archMismatch) {
-        return {
-            ok: false,
-            message: `Flash Player is a ${projector.architectures.join('/')} program and cannot run on this machine.`
-        };
-    }
-    if (projector.tampered) {
-        return { ok: false, message: `${projector.tamperReason}. Reinstall the launcher to play.` };
+
+    const chosen = ENGINES.includes(requested);
+    const engine = chosen ? requested : preferredEngine();
+    const problem = engineProblem(engine);
+    if (problem) {
+        return { ok: false, message: problem };
     }
 
-    state.write({ serverId: selected.id });
+    state.write(chosen ? { serverId: selected.id, engine } : { serverId: selected.id });
 
     // Before Flash Player starts, not after: the server signs the game's first connection
     // in from a pending hand-off, and the point of the saved token is that there is already
@@ -618,7 +795,8 @@ async function play(serverId) {
         void gameStats.sync();
     }
 
-    const launched = await launchProjector(selected.url, settings);
+    const launched =
+        engine === 'flashbrowser' ? await launchFlashBrowser(selected.url) : await launchProjector(selected.url, settings);
     if (!launched.ok) {
         gameHost.stop();
         presence.stop();
@@ -632,8 +810,10 @@ async function play(serverId) {
 // Discord's consent screen is sent to the player's own browser, never rendered here: the
 // launcher window shows only its own page and loads no remote content at all.
 //
-// Nothing is lost by leaving: the server keys a pending login by requester address, so the
-// launcher's poll sees the sign-in the player completed in their browser.
+// Nothing is lost by leaving: each sign-in carries a one-time key of the launcher's own
+// (lib/discordAuth.js), and the server files the completed login under it as well as under the
+// browser's address, so the launcher's poll sees the sign-in the player completed in their
+// browser -- even a browser behind a VPN or proxy the launcher is not.
 function openDiscordLogin() {
     const { selected } = resolveSelectedServer();
     if (!selected) {
@@ -643,16 +823,47 @@ function openDiscordLogin() {
         return { ok: true };
     }
 
-    const authUrl = discordAuth.absolute(selected.url, '/auth/discord');
+    const loginKey = discordAuth.createLoginKey();
+    const authUrl = discordAuth.loginUrl(selected.url, loginKey);
     if (!normalizeHttpUrl(authUrl)) {
         return { ok: false, message: 'The sign-in address is not valid.' };
     }
 
+    // On Linux Electron reports the browser as opened even when xdg-open failed, so the window
+    // also offers the link to copy for as long as the sign-in is pending.
+    loginLink = authUrl;
+    loginCode = { required: false, rejected: false, ended: false };
+    pendingLoginCode = '';
     openExternal(authUrl);
 
-    loginWatcher = discordAuth.watchForLogin(selected.url);
-    void loginWatcher.promise.then(async (pending) => {
+    const watcher = discordAuth.watchForLogin(selected.url, {
+        loginKey,
+        // A code is sent once per time the player enters it: each wrong one counts on the server.
+        takeLoginCode: () => {
+            const code = pendingLoginCode;
+            pendingLoginCode = '';
+            return code;
+        },
+        onCodeStatus: ({ codeRequired, codeRejected }) => {
+            // The server dropped the sign-in after too many wrong codes: stop waiting on it.
+            const ended = codeRejected && !codeRequired;
+            // "Wrong code" stays up until the player enters another one, not just for the one poll
+            // that carried the wrong code.
+            const next = { required: codeRequired, rejected: codeRejected || (loginCode.rejected && codeRequired), ended };
+            if (next.required !== loginCode.required || next.rejected !== loginCode.rejected || next.ended !== loginCode.ended) {
+                loginCode = next;
+                pushState();
+            }
+            if (ended) {
+                watcher.cancel();
+            }
+        }
+    });
+    loginWatcher = watcher;
+    void watcher.promise.then(async (pending) => {
         loginWatcher = null;
+        loginLink = '';
+        pendingLoginCode = '';
         if (!pending) {
             pushState();
             return;
@@ -662,7 +873,7 @@ function openDiscordLogin() {
         // While the hand-off this sign-in created is still live, which is what the server
         // grants the token against. It is also what play() below spends, so the token has to
         // be asked for first.
-        await captureLauncherSession(selected.url, pending.email);
+        await captureLauncherSession(selected.url, pending.email, loginKey);
         // A game already open needs nothing: the server's OAuth callback signs its open
         // connection in by itself. Otherwise this sign-in is what the player was waiting on.
         if (!gameProcess) {
@@ -831,8 +1042,8 @@ function stopAccountPolling() {
 }
 
 /** Take the device token the server offers while this sign-in is still fresh. */
-async function captureLauncherSession(gameUrl, email) {
-    const issued = await discordAuth.issueSession(gameUrl);
+async function captureLauncherSession(gameUrl, email, loginKey = '') {
+    const issued = await discordAuth.issueSession(gameUrl, loginKey);
     if (!issued) {
         // An older server, or one that did not offer one. The player is signed in for this
         // session; the next start simply asks again, which is where we started.
@@ -966,6 +1177,28 @@ function registerIpc() {
 
     ipcMain.handle('launcher:discordLogin', () => openDiscordLogin());
 
+    // The code the browser page shows, for a launcher the server cannot match by address. It is
+    // only kept until the next poll sends it.
+    ipcMain.handle('launcher:submitLoginCode', (_event, code) => {
+        const cleaned = String(code || '').replace(/[^A-Za-z0-9-]/g, '').slice(0, 16);
+        if (!loginWatcher || !cleaned) {
+            return { ok: false };
+        }
+        pendingLoginCode = cleaned;
+        loginCode = { ...loginCode, rejected: false };
+        pushState();
+        return { ok: true };
+    });
+
+    // For a browser that did not open, or opened somewhere the player is not looking.
+    ipcMain.handle('launcher:copySignInLink', () => {
+        if (!loginWatcher || !loginLink) {
+            return { ok: false };
+        }
+        clipboard.writeText(loginLink);
+        return { ok: true };
+    });
+
     ipcMain.handle('launcher:forgetDiscordLogin', () => {
         forgetDiscordLogin();
         return launcherState();
@@ -1026,7 +1259,8 @@ function registerIpc() {
         return gameStatsSummary();
     });
 
-    ipcMain.handle('launcher:play', () => play());
+    // The renderer names the button that was pressed; anything else is a plain play.
+    ipcMain.handle('launcher:play', (_event, engine) => play({ engine: typeof engine === 'string' ? engine : '' }));
     ipcMain.handle('launcher:quit', () => app.quit());
 }
 
@@ -1156,7 +1390,7 @@ if (instrumentation) {
         // device token on the way, so the game finds a sign-in waiting for it. If the
         // token has been revoked or has expired, play() says so and the launcher window is
         // already up with the Discord button on it.
-        if (remembered && projectorReady()) {
+        if (remembered && (flashBrowserReady() || projectorReady())) {
             void play();
         }
 
@@ -1169,9 +1403,9 @@ if (instrumentation) {
     });
 
     app.on('window-all-closed', () => {
-        // Flash Player's window is not one of ours: closing the launcher while the game is
-        // open in it leaves the session running. endGameSession() quits once the game
-        // closes too.
+        // The game's window is not one of ours -- FlashBrowser and Flash Player are their own
+        // programs: closing the launcher while the game is open leaves the session running.
+        // endGameSession() quits once the game closes too.
         if (gameProcess) {
             return;
         }

@@ -38,7 +38,29 @@
       <button id="discord-login" type="button" class="db-launch">
         <span class="label">Sign in with Discord</span>
       </button>
+      <!-- While a sign-in waits on the browser: the same link, for a browser that did not open
+           or a player who would rather paste it into another one. -->
+      <button id="copy-login" type="button" class="link quiet" hidden>Browser didn't open? Copy the sign-in link</button>
+
+      <!-- When the launcher and the browser reach the server from different addresses, the
+           server asks for the code its "login successful" page shows before it signs this
+           launcher in. -->
+      <div id="login-code" class="login-code" hidden>
+        <label for="login-code-input">Enter the code your browser shows</label>
+        <div class="login-code__row">
+          <input id="login-code-input" type="text" maxlength="9" autocomplete="off" spellcheck="false" placeholder="XXXX-XXXX">
+          <button id="login-code-submit" type="button" class="ghost">Confirm</button>
+        </div>
+        <span id="login-code-error" class="login-code__error" hidden>Wrong code. Check your browser and try again.</span>
+      </div>
       <button id="play" type="button" class="db-play">Open the game</button>
+
+      <!-- Legacy: Adobe Flash Player 32, the standalone player, for players who see a delay
+           collecting loot in FlashBrowser (the button above, the default). Always offered. -->
+      <div id="alt-engine" class="alt-engine">
+        <button id="play-projector" type="button" class="db-play-alt">Play Legacy (Adobe Flash Player 32)</button>
+        <span class="alt-engine__hint">Delay collecting loot? Play with Legacy.</span>
+      </div>
 
       <!-- Signing in is a one-time thing: once an account is known the button is replaced by
            it, whether the sign-in happened here or inside the game. -->
