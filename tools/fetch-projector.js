@@ -16,6 +16,10 @@
  *   node tools/fetch-projector.js [--platform win32|darwin|linux] [--force]
  *   node tools/fetch-projector.js --platform darwin --print-hash   # learn a hash to pin
  *
+ * Whatever ends up in vendor/ is then fingerprinted into lib/projector.integrity.json,
+ * which is packed into the app's own code: a packaged launcher refuses to start a Flash
+ * Player that does not match it (lib/integrity.js).
+ *
  * Needs Node 18+ (global fetch). The macOS image is unpacked with hdiutil, so the darwin
  * projector has to be fetched on a Mac -- which is where the macOS package is built anyway.
  */
@@ -143,6 +147,7 @@ async function main() {
     const existing = projectorInDirectory(target, args.platform);
     if (existing && !args.force && !args.printHash) {
         console.log(`[fetch-projector] ${args.platform}: already present -> ${existing} (--force to fetch again)`);
+        fingerprint(existing, args.platform, lock.version);
         return;
     }
 
@@ -171,6 +176,13 @@ async function main() {
         throw new Error(`nothing usable was unpacked into ${target}`);
     }
     console.log(`[fetch-projector] ${args.platform}: Flash Player ${lock.version} -> ${installed}`);
+    fingerprint(installed, args.platform, lock.version);
+}
+
+function fingerprint(projectorPath, platform, version) {
+    const { writeExpected } = require('../lib/integrity');
+    const record = writeExpected(projectorPath, { platform, version });
+    console.log(`[fetch-projector] fingerprint ${record.digest} -> lib/projector.integrity.json`);
 }
 
 main().catch((error) => {

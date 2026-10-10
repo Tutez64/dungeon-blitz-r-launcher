@@ -255,6 +255,15 @@ function main() {
     assert.strictEqual(row(rows, 'Flash').value, 'x64-only - cannot run here');
     assert.strictEqual(row(rows, 'Flash').tone, 'bad');
 
+    // A Flash Player that no longer matches the installed one: refused, and said so.
+    render(baseState({ ...ARMED_FLASH, armed: false, locked: true, tampered: true }, IDLE_SOCIAL));
+    rows = rowsFrom(registry);
+    assert.strictEqual(row(rows, 'Flash').value, 'changed - reinstall');
+    assert.strictEqual(row(rows, 'Flash').tone, 'bad');
+    assert.ok(registry.get('problem').textContent.includes('Reinstall'), registry.get('problem').textContent);
+    assert.strictEqual(registry.get('play').disabled, true, 'a tampered Flash Player cannot be started');
+    assert.strictEqual(registry.get('browse-flash').hidden, true, 'an installed launcher offers no Flash Player picker');
+
     // Everything idle is normal: presence and chat both start with the game.
     render(baseState(MISSING_FLASH, IDLE_SOCIAL));
     rows = rowsFrom(registry);

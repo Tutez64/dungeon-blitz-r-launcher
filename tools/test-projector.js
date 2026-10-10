@@ -319,7 +319,63 @@ function testLockFile() {
     console.log('[test-projector] every platform downloads flashplayer_32_sa against a pinned hash: OK');
 }
 
+/**
+ * The tamper check an installed launcher runs before every game: a recorded fingerprint
+ * must match the Flash Player byte for byte, file for file.
+ */
+function testIntegrity() {
+    const integrity = require('../lib/integrity');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'db-integrity-'));
+    try {
+        const record = path.join(root, 'projector.integrity.json');
+
+        // A single executable (Windows, Linux).
+        const exe = path.join(root, 'flashplayer_32_sa.exe');
+        fs.writeFileSync(exe, peHeader(0x014c));
+        integrity.writeExpected(exe, { platform: 'win32', version: '32.0.0.465' }, record);
+        assert.deepStrictEqual(integrity.verifyProjector(exe, { integrityPath: record, platform: 'win32' }), { ok: true, reason: '' });
+
+        // One changed byte is a different player.
+        const patched = peHeader(0x014c);
+        patched[0x90] = 0x90;
+        fs.writeFileSync(exe, patched);
+        const changed = integrity.verifyProjector(exe, { integrityPath: record, platform: 'win32' });
+        assert.strictEqual(changed.ok, false, 'a patched executable is refused');
+        assert.ok(changed.reason.includes('changed'), changed.reason);
+
+        // A different file in the same place, a record for another platform, or no record at
+        // all are refusals too -- never a silent pass.
+        const other = path.join(root, 'flashplayer.exe');
+        fs.writeFileSync(other, peHeader(0x014c));
+        assert.strictEqual(integrity.verifyProjector(other, { integrityPath: record, platform: 'win32' }).ok, false);
+        assert.strictEqual(integrity.verifyProjector(exe, { integrityPath: record, platform: 'linux' }).ok, false);
+        assert.strictEqual(integrity.verifyProjector(exe, { integrityPath: path.join(root, 'none.json'), platform: 'win32' }).ok, false);
+
+        // A bundle (macOS): adding a file anywhere inside it changes the fingerprint.
+        const app = path.join(root, 'Flash Player.app');
+        fs.mkdirSync(path.join(app, 'Contents', 'MacOS'), { recursive: true });
+        fs.writeFileSync(path.join(app, 'Contents', 'MacOS', 'Flash Player'), Buffer.from('player'));
+        fs.writeFileSync(path.join(app, 'Contents', 'Info.plist'), Buffer.from('<plist/>'));
+        integrity.writeExpected(app, { platform: 'darwin', version: '32.0.0.465' }, record);
+        assert.strictEqual(integrity.verifyProjector(app, { integrityPath: record, platform: 'darwin' }).ok, true);
+        fs.writeFileSync(path.join(app, 'Contents', 'MacOS', 'inject.dylib'), Buffer.from('x'));
+        assert.strictEqual(integrity.verifyProjector(app, { integrityPath: record, platform: 'darwin' }).ok, false, 'an added file is refused');
+        fs.rmSync(path.join(app, 'Contents', 'MacOS', 'inject.dylib'));
+        assert.strictEqual(integrity.verifyProjector(app, { integrityPath: record, platform: 'darwin' }).ok, true, 'and passes again once removed');
+
+        // The same tree digests the same, wherever it is: the check compares contents, not
+        // install locations.
+        const copy = path.join(root, 'elsewhere', 'Flash Player.app');
+        fs.cpSync(app, copy, { recursive: true });
+        assert.strictEqual(integrity.treeDigest(copy), integrity.treeDigest(app));
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+    console.log('[test-projector] a changed, swapped or unrecorded Flash Player is refused: OK');
+}
+
 async function main() {
+    testIntegrity();
     testLockFile();
     testSwfUrl();
     await testResolveSwfUrl();

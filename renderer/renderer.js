@@ -66,7 +66,11 @@ function engineRows(state) {
     let flashDetail = 'No Flash Player was found. Choose the standalone Flash Player (flashplayer_32_sa) by hand.';
     if (flash.found) {
         flashDetail = flash.path || '';
-        if (flash.archMismatch) {
+        if (flash.tampered) {
+            flashValue = 'changed - reinstall';
+            flashTone = 'bad';
+            flashDetail = `${flash.path || ''}\nThese files do not match the Flash Player this launcher was installed with.`;
+        } else if (flash.archMismatch) {
             flashValue = `${(flash.architectures || []).join('/')}-only - cannot run here`;
             flashTone = 'bad';
         } else {
@@ -238,6 +242,8 @@ function showProblem(message, severity) {
     elements.problem.textContent = message || '';
     elements.problem.className = severity === 'bad' ? 'problem bad' : 'problem';
     elements.repair.hidden = !message;
+    // An installed launcher runs only its own, verified Flash Player: nothing to choose.
+    elements.browseFlash.hidden = Boolean(currentState && currentState.flash && currentState.flash.locked);
 }
 
 /**
@@ -311,7 +317,18 @@ function render(state) {
     elements.forget.hidden = !state.discord.remembered;
 
     if (!flash.found) {
-        showProblem('Flash Player is missing. Point the launcher at it to continue.', 'bad');
+        showProblem(
+            flash.locked
+                ? 'Flash Player is missing from this install. Reinstall the launcher to play.'
+                : 'Flash Player is missing. Point the launcher at it to continue.',
+            'bad'
+        );
+    } else if (flash.tampered) {
+        showProblem(
+            'The Flash Player files were changed after installation, so the game will not start. ' +
+                'Reinstall the launcher to play.',
+            'bad'
+        );
     } else if (flash.archMismatch) {
         showProblem(
             `This Flash Player is a ${flash.architectures.join('/')} program and cannot run on this machine. ` +

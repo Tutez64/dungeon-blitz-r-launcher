@@ -19,6 +19,7 @@ const path = require('path');
 
 const { macBundleExecutable, parseBinaryArchitectures } = require('../lib/binary');
 const { canExecute, projectorInDirectory } = require('../lib/projector');
+const { verifyProjector } = require('../lib/integrity');
 const { findUnpackagedFiles } = require('../lib/packageFiles');
 
 const LAUNCHER_ROOT = path.resolve(__dirname, '..');
@@ -123,6 +124,16 @@ function checkProjector(platform, arch) {
             console.error(
                 `[preflight] ERROR: ${path.basename(found)} is ${architectures.join('/')} and cannot run on ${unable.join('/')}.`
             );
+            console.error('');
+            return false;
+        }
+        // The fingerprint an installed launcher checks before every game. A package whose
+        // fingerprint does not match its own Flash Player would refuse every player.
+        const fingerprint = verifyProjector(found, { platform });
+        if (!fingerprint.ok) {
+            console.error('');
+            console.error(`[preflight] ERROR: Flash Player fingerprint: ${fingerprint.reason}.`);
+            console.error(`[preflight] Run \`node tools/fetch-projector.js --platform ${platform}\` again, then rebuild.`);
             console.error('');
             return false;
         }

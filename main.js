@@ -11,6 +11,7 @@ const { createLauncherSessionRecovery } = require('./lib/launcherSessionRecovery
 const discordAuth = require('./lib/discordAuth');
 const { exists, inspectInstallLocation, isWritableDirectory } = require('./lib/install');
 const { GameHost } = require('./lib/gameHost');
+const { verifyProjector } = require('./lib/integrity');
 const { findProjector, findVendoredProjector, isChosenProjector, projectorCommand, resolveSwfUrl } = require('./lib/projector');
 const { compatibilitySwitches, describeWindows, unsupportedArchitectureMessage, unsupportedWindowsMessage } = require('./lib/windowsSupport');
 const { PresenceBridge } = require('./lib/presence');
@@ -100,7 +101,26 @@ let serverReachable = null;
 // nobody will notice going stale.
 let installLocation = { relocate: false, reason: '', bundlePath: '', targetPath: '', message: '' };
 
+/**
+ * Finds the Flash Player to run the game in.
+ *
+ * A packaged launcher is locked to the Flash Player it shipped with, and checks it against
+ * the fingerprint the build packed into the app (lib/integrity.js): a replaced or patched
+ * player is reported as `tampered` and never started. A development checkout keeps the
+ * flexible lookup -- a hand-picked file, the gitignored projector/ drop point, the usual
+ * install places -- because that is where a player is swapped on purpose.
+ */
 function locateProjector(preferredPath) {
+    if (app.isPackaged) {
+        const found = findProjector({ vendorOnly: true });
+        if (found) {
+            const check = verifyProjector(found.path);
+            found.tampered = !check.ok;
+            found.tamperReason = check.reason;
+        }
+        return found;
+    }
+
     return findProjector({
         preferredPath,
         // A gitignored projector/ at the repository root is a drop point for a checkout that
@@ -115,7 +135,7 @@ function locateProjector(preferredPath) {
  * window -- and the only one; the PPAPI plugin inside Chromium it replaced is gone.
  */
 function projectorReady() {
-    return Boolean(projector && !projector.archMismatch);
+    return Boolean(projector && !projector.archMismatch && !projector.tampered);
 }
 
 function gameRunning() {
@@ -138,6 +158,9 @@ function findFlashPlayer() {
     );
     if (projector.archMismatch) {
         console.log(`[Flash] WARNING: Flash Player is ${projector.architectures.join('/')} and cannot run on this machine.`);
+    }
+    if (projector.tampered) {
+        console.log(`[Flash] REFUSED: ${projector.tamperReason}. Reinstall the launcher.`);
     }
 }
 
@@ -277,6 +300,8 @@ function flashStatus() {
         return {
             found: false,
             armed: false,
+            locked: app.isPackaged,
+            tampered: false,
             path: '',
             version: '',
             source: '',
@@ -287,7 +312,11 @@ function flashStatus() {
 
     return {
         found: true,
-        armed: !projector.archMismatch,
+        armed: projectorReady(),
+        // A packaged launcher runs only its own, verified Flash Player; there is nothing to
+        // choose by hand.
+        locked: app.isPackaged,
+        tampered: Boolean(projector.tampered),
         path: projector.path,
         version: projector.version,
         source: projector.source,
@@ -425,7 +454,11 @@ function createLauncherWindow() {
             nodeIntegration: false,
             sandbox: false,
             // The launcher shell hosts no plugins; the game runs in the standalone Flash Player.
-            plugins: false
+            plugins: false,
+            // No developer tools in an installed launcher: they are a console onto the IPC
+            // calls that start the game.
+            devTools: !app.isPackaged,
+            webviewTag: false
         }
     });
 
@@ -473,6 +506,18 @@ function endGameSession() {
  * @returns {Promise<{ ok: boolean, message?: string }>}
  */
 async function launchProjector(serverUrl, settings) {
+    // Checked again at the moment of starting, not only at launch: the install folder can be
+    // written to while the launcher sits on its sign-in screen.
+    if (app.isPackaged) {
+        const check = verifyProjector(projector.path);
+        if (!check.ok) {
+            projector.tampered = true;
+            projector.tamperReason = check.reason;
+            console.log(`[Flash] REFUSED: ${check.reason}`);
+            return { ok: false, message: `${check.reason}. Reinstall the launcher to play.` };
+        }
+    }
+
     const swfUrl = await resolveSwfUrl(serverUrl);
     const { command, args } = projectorCommand(projector, swfUrl);
     console.log(`[Flash] Starting ${command} ${args.join(' ')}`);
@@ -544,6 +589,9 @@ async function play(serverId) {
             ok: false,
             message: `Flash Player is a ${projector.architectures.join('/')} program and cannot run on this machine.`
         };
+    }
+    if (projector.tampered) {
+        return { ok: false, message: `${projector.tamperReason}. Reinstall the launcher to play.` };
     }
 
     state.write({ serverId: selected.id });
@@ -952,6 +1000,9 @@ function registerIpc() {
     });
 
     ipcMain.handle('launcher:browseFlash', async () => {
+        if (app.isPackaged) {
+            return { ...launcherState(), notice: 'This launcher only runs the Flash Player it was installed with.' };
+        }
         const filters =
             process.platform === 'win32'
                 ? [{ name: 'Flash Player', extensions: ['exe'] }]
@@ -1007,7 +1058,68 @@ function registerIpc() {
     ipcMain.handle('launcher:quit', () => app.quit());
 }
 
-if (!app.requestSingleInstanceLock()) {
+/**
+ * Whether an installed launcher was started to be inspected or instrumented: a Node or
+ * Chromium debugger, or NODE_OPTIONS loading code ahead of the launcher's own.
+ *
+ * Electron 11 cannot switch these off at the binary level (that needs Electron's fuses,
+ * which arrived in 12), so the launcher checks for them itself and refuses to run. A
+ * development checkout is never refused.
+ */
+function instrumentationDetected() {
+    if (!app.isPackaged) {
+        return '';
+    }
+
+    const switches = ['inspect', 'inspect-brk', 'inspect-port', 'remote-debugging-port', 'remote-debugging-pipe', 'js-flags'];
+    const flagged = switches.find((name) => app.commandLine.hasSwitch(name));
+    if (flagged) {
+        return `--${flagged}`;
+    }
+    const argument = process.argv.find((arg) => /^--(inspect|remote-debugging|js-flags)/.test(arg));
+    if (argument) {
+        return argument.split('=')[0];
+    }
+    if (/(^|\s)(--require|-r|--inspect|--loader|--experimental-loader)\b/.test(String(process.env.NODE_OPTIONS || ''))) {
+        return 'NODE_OPTIONS';
+    }
+    try {
+        if (require('inspector').url()) {
+            return 'an attached debugger';
+        }
+    } catch {
+        // No inspector module: nothing can be attached through it.
+    }
+    return '';
+}
+
+// Every page the launcher ever shows is its own: nothing may navigate one elsewhere, open a
+// window, embed a webview, or -- in an installed launcher -- keep developer tools open.
+app.on('web-contents-created', (_event, contents) => {
+    contents.on('will-navigate', (event, url) => {
+        event.preventDefault();
+        openExternal(url);
+    });
+    contents.on('new-window', (event, url) => {
+        event.preventDefault();
+        openExternal(url);
+    });
+    contents.on('will-attach-webview', (event) => event.preventDefault());
+    if (app.isPackaged) {
+        contents.on('devtools-opened', () => contents.closeDevTools());
+    }
+});
+
+const instrumentation = instrumentationDetected();
+if (instrumentation) {
+    console.error(`[Launcher] Refusing to run: started with ${instrumentation}.`);
+    dialog.showErrorBox(
+        'Dungeon Blitz: R cannot start',
+        `The launcher was started with ${instrumentation}, which an installed launcher does not allow.\n\n` +
+            'Start it normally from its shortcut.'
+    );
+    app.exit(1);
+} else if (!app.requestSingleInstanceLock()) {
     app.quit();
 } else {
     app.on('second-instance', () => {

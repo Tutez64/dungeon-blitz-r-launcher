@@ -200,25 +200,27 @@ jobs:
 
       - name: Check Flash Player made it into the package
         shell: bash
-        # The installers are only worth shipping if the player inside them is intact: on
-        # macOS that means Adobe's signature still verifies after packaging.
+        # The installers are only worth shipping if the player inside them is intact: its
+        # fingerprint must match the one packed into the app (the check an installed
+        # launcher runs before every game), and on macOS Adobe's signature must still verify.
         run: |
           case "${{ matrix.platform }}" in
             darwin)
               app=$(find dist -maxdepth 8 -path '*.app/Contents/Resources/vendor/projector/darwin/Flash Player.app' | head -1)
               test -n "$app" || { echo "Flash Player.app is missing from the package"; exit 1; }
               codesign --verify --deep --strict --verbose=2 "$app"
+              node tools/verify-projector.js "$app" --platform darwin
               ;;
             win32)
               found=$(find dist -path '*unpacked*/resources/vendor/projector/win32/flashplayer_32_sa.exe' | head -1)
               test -n "$found" || { echo "flashplayer_32_sa.exe is missing from the package"; exit 1; }
-              ls -la "$found"
+              node tools/verify-projector.js "$found" --platform win32
               ;;
             linux)
               found=$(find dist -path '*unpacked/resources/vendor/projector/linux/flashplayer' | head -1)
               test -n "$found" || { echo "flashplayer is missing from the package"; exit 1; }
               test -x "$found" || { echo "flashplayer is not executable in the package"; exit 1; }
-              ls -la "$found"
+              node tools/verify-projector.js "$found" --platform linux
               ;;
           esac
 

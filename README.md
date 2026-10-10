@@ -104,6 +104,47 @@ Once an account is known, the sign-in button is replaced by `Signed in as <name>
 whether the sign-in happened in the launcher or inside the game, where the SWF's own Discord
 flow lands the player (see [Remembered account](#remembered-account)).
 
+## Tamper resistance
+
+An **installed** launcher refuses to be repurposed. A development checkout is exempt from
+all of this.
+
+- **Only its own Flash Player.** It runs only the Flash Player it was installed with. It
+  never uses a hand-picked file or a copy found elsewhere on the machine, so the
+  **Choose Flash Player...** button is hidden.
+- **Fingerprint check before every game.** At build time, `tools/fetch-projector.js`
+  records a SHA-256 fingerprint of that Flash Player in `lib/projector.integrity.json`. That
+  file is packed into the app's own code, not left next to the player.
+  - The check covers every file in the macOS bundle, so an added library counts as a change.
+  - A replaced or patched player is refused: the status strip reads
+    `changed - reinstall`, and the game does not start.
+- **No developer tools.** The launcher window has DevTools switched off, and any DevTools
+  that open are closed again.
+- **No debugging or injected code.** A launcher started with a debugger (`--inspect`,
+  `--remote-debugging-port`, `--js-flags`) or with `NODE_OPTIONS` loading code exits at
+  start.
+- **The window stays on its own page.** No page can navigate the launcher window
+  elsewhere, open a new window or embed a webview. Links go to the system browser.
+- **CI checks the shipped copy.** The release workflow runs `tools/verify-projector.js` on
+  the copy of Flash Player inside each finished package. A package whose own check would
+  refuse to play therefore cannot be published.
+
+**What this cannot stop.** Nothing running on the player's own machine can be made
+impossible to manipulate; these checks raise the cost of doing it. In particular:
+
+- **Patching the launcher's code.** Someone can edit the launcher's code and the
+  fingerprint together. Electron 11 cannot verify its own `app.asar`. That check
+  (`EnableEmbeddedAsarIntegrityValidation`) and the switches that disable
+  `ELECTRON_RUN_AS_NODE` and `NODE_OPTIONS` at the binary level are Electron *fuses*.
+  Fuses arrived in Electron 12; asar integrity checking came later still (macOS 16,
+  Windows 30). Getting them means leaving Electron 11, which drops Windows 7 and 8.
+- **Unsigned installers.** Installers are unsigned unless the studio's certificates are
+  configured (`CSC_LINK`, `CSC_KEY_PASSWORD`, and Apple notarization). Signing is what makes
+  a modified installer show as untrusted to the player.
+- **The game itself.** Flash Player runs the SWF, and memory editors work on any process.
+  What the game accepts is decided by the server: `src/server/core/anticheat` in the game
+  repository.
+
 ## Why Electron 11
 
 The launcher window still runs on Electron 11 (Chromium 87), which runs on Windows 7 and 8;
