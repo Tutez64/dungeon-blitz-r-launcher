@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('launcher', {
     getState: () => ipcRenderer.invoke('launcher:getState'),
     discordLogin: () => ipcRenderer.invoke('launcher:discordLogin'),
     copySignInLink: () => ipcRenderer.invoke('launcher:copySignInLink'),
+    submitLoginCode: (code) => ipcRenderer.invoke('launcher:submitLoginCode', code),
     forgetDiscordLogin: () => ipcRenderer.invoke('launcher:forgetDiscordLogin'),
     // 'flashbrowser' or 'projector': the engine whose button was pressed.
     play: (engine) => ipcRenderer.invoke('launcher:play', engine),

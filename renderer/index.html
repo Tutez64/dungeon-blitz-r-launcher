@@ -41,6 +41,18 @@
       <!-- While a sign-in waits on the browser: the same link, for a browser that did not open
            or a player who would rather paste it into another one. -->
       <button id="copy-login" type="button" class="link quiet" hidden>Browser didn't open? Copy the sign-in link</button>
+
+      <!-- When the launcher and the browser reach the server from different addresses, the
+           server asks for the code its "login successful" page shows before it signs this
+           launcher in. -->
+      <div id="login-code" class="login-code" hidden>
+        <label for="login-code-input">Enter the code your browser shows</label>
+        <div class="login-code__row">
+          <input id="login-code-input" type="text" maxlength="9" autocomplete="off" spellcheck="false" placeholder="XXXX-XXXX">
+          <button id="login-code-submit" type="button" class="ghost">Confirm</button>
+        </div>
+        <span id="login-code-error" class="login-code__error" hidden>That code doesn't match. Check your browser and try again.</span>
+      </div>
       <button id="play" type="button" class="db-play">Open the game</button>
 
       <!-- Legacy: Adobe Flash Player 32, the standalone player, for players who see a delay

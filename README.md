@@ -328,8 +328,11 @@ because the launcher window loads no remote content. The launcher still sees the
 - The launcher's poll and its device-token request send the key itself in an
   `X-Launcher-Login-Key` header. So the login is found even when the browser reaches the server
   from another address than the launcher, for example through a browser VPN or proxy.
-- The key is never in the browser, a URL or a log. Someone who only sees the sign-in link
-  cannot claim the login.
+- The key is never in the browser, a URL or a log.
+- When the launcher and the browser are at different addresses, the key alone is not enough.
+  Anyone can make a key and send a player a sign-in link, so the server also wants the one-time
+  code its "Discord Login Successful" page shows. The launcher asks for it in a small box, and
+  only the person who just signed in can see that code. Five wrong codes cancel the sign-in.
 - A server without this matches the browser and the launcher by address, as it always did.
 - While a sign-in is pending, the window offers **Copy the sign-in link**. On Linux, Electron
   reports the browser as opened even when `xdg-open` failed, so this is the way through when

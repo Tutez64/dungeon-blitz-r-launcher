@@ -104,6 +104,11 @@ let loginWatcher = null;
 // The browser address of the sign-in in progress, for the "Copy sign-in link" button. It names
 // the sign-in's key by hash only, so it is safe to put on the clipboard.
 let loginLink = '';
+// Whether the server wants the code the browser page shows (the launcher is not at the
+// browser's address), whether the last one entered was wrong, and whether too many wrong ones
+// ended the sign-in. `pendingLoginCode` is a code the player entered, sent once.
+let loginCode = { required: false, rejected: false, ended: false };
+let pendingLoginCode = '';
 let projector = null;
 let flashBrowser = { offered: false, target: '', found: null, partial: null, tampered: false, tamperReason: '' };
 let discordAccount = { linked: false, email: '', name: '' };
@@ -480,7 +485,10 @@ function launcherState() {
             ...discordAccount,
             remembered,
             loginPending: Boolean(loginWatcher),
-            loginLinkAvailable: Boolean(loginWatcher && loginLink)
+            loginLinkAvailable: Boolean(loginWatcher && loginLink),
+            loginCodeRequired: Boolean(loginWatcher && loginCode.required),
+            loginCodeRejected: Boolean(loginWatcher && loginCode.rejected),
+            loginCodeEnded: Boolean(!loginWatcher && loginCode.ended)
         }
     };
 }
@@ -824,12 +832,38 @@ function openDiscordLogin() {
     // On Linux Electron reports the browser as opened even when xdg-open failed, so the window
     // also offers the link to copy for as long as the sign-in is pending.
     loginLink = authUrl;
+    loginCode = { required: false, rejected: false, ended: false };
+    pendingLoginCode = '';
     openExternal(authUrl);
 
-    loginWatcher = discordAuth.watchForLogin(selected.url, { loginKey });
-    void loginWatcher.promise.then(async (pending) => {
+    const watcher = discordAuth.watchForLogin(selected.url, {
+        loginKey,
+        // A code is sent once per time the player enters it: each wrong one counts on the server.
+        takeLoginCode: () => {
+            const code = pendingLoginCode;
+            pendingLoginCode = '';
+            return code;
+        },
+        onCodeStatus: ({ codeRequired, codeRejected }) => {
+            // The server dropped the sign-in after too many wrong codes: stop waiting on it.
+            const ended = codeRejected && !codeRequired;
+            // "Wrong code" stays up until the player enters another one, not just for the one poll
+            // that carried the wrong code.
+            const next = { required: codeRequired, rejected: codeRejected || (loginCode.rejected && codeRequired), ended };
+            if (next.required !== loginCode.required || next.rejected !== loginCode.rejected || next.ended !== loginCode.ended) {
+                loginCode = next;
+                pushState();
+            }
+            if (ended) {
+                watcher.cancel();
+            }
+        }
+    });
+    loginWatcher = watcher;
+    void watcher.promise.then(async (pending) => {
         loginWatcher = null;
         loginLink = '';
+        pendingLoginCode = '';
         if (!pending) {
             pushState();
             return;
@@ -1142,6 +1176,19 @@ function registerIpc() {
     ipcMain.handle('launcher:getState', () => launcherState());
 
     ipcMain.handle('launcher:discordLogin', () => openDiscordLogin());
+
+    // The code the browser page shows, for a launcher the server cannot match by address. It is
+    // only kept until the next poll sends it.
+    ipcMain.handle('launcher:submitLoginCode', (_event, code) => {
+        const cleaned = String(code || '').replace(/[^A-Za-z0-9-]/g, '').slice(0, 16);
+        if (!loginWatcher || !cleaned) {
+            return { ok: false };
+        }
+        pendingLoginCode = cleaned;
+        loginCode = { ...loginCode, rejected: false };
+        pushState();
+        return { ok: true };
+    });
 
     // For a browser that did not open, or opened somewhere the player is not looking.
     ipcMain.handle('launcher:copySignInLink', () => {

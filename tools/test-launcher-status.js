@@ -25,6 +25,7 @@ class StubElement {
         this.className = '';
         this.textContent = '';
         this.title = '';
+        this.value = '';
         this.listeners = {};
     }
 
@@ -76,6 +77,10 @@ function loadRenderer() {
                 return { ok: true };
             },
             discordLogin: async () => ({ ok: true }),
+            submitLoginCode: async (code) => {
+                plays.push(`code:${code}`);
+                return { ok: true };
+            },
             copySignInLink: async () => {
                 plays.push('copy-sign-in-link');
                 return { ok: true };
@@ -269,6 +274,40 @@ async function checkCopySignInLink(render, registry, plays) {
     assert.strictEqual(registry.get('copy-login').hidden, true, 'nothing to copy, no button');
 
     console.log('[test-launcher-status] a pending sign-in offers its link to copy: OK');
+}
+
+/** A launcher the server cannot match by address asks for the code the browser page shows. */
+async function checkLoginCode(render, registry, plays) {
+    const pending = { linked: false, email: '', name: '', remembered: false, loginPending: true, loginLinkAvailable: true };
+
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { discord: pending }));
+    assert.strictEqual(registry.get('login-code').hidden, true, 'no code box until the server asks');
+
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { discord: { ...pending, loginCodeRequired: true } }));
+    assert.strictEqual(registry.get('login-code').hidden, false, 'the server asked: the box appears');
+    assert.strictEqual(registry.get('login-code-error').hidden, true);
+    assert.strictEqual(registry.get('status').textContent, 'Enter the code from your browser.');
+
+    plays.length = 0;
+    registry.get('login-code-input').value = ' k7qm-4xpa ';
+    await registry.get('login-code-submit').listeners.click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepStrictEqual(plays, ['code:k7qm-4xpa'], 'Confirm sends what was typed');
+
+    plays.length = 0;
+    await registry.get('login-code-input').listeners.keydown({ key: 'Enter' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepStrictEqual(plays, ['code:k7qm-4xpa'], 'and so does Enter');
+
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { discord: { ...pending, loginCodeRequired: true, loginCodeRejected: true } }));
+    assert.strictEqual(registry.get('login-code-error').hidden, false, 'a wrong code is said');
+
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { discord: { ...pending, loginPending: false, loginCodeEnded: true } }));
+    assert.strictEqual(registry.get('login-code').hidden, true);
+    assert.strictEqual(registry.get('login-code-input').value, '', 'the box is emptied when it goes away');
+    assert.ok(registry.get('problem').textContent.includes('Too many wrong codes'), 'too many wrong codes end the sign-in, and say so');
+
+    console.log('[test-launcher-status] a launcher at another address asks for the browser code: OK');
 }
 
 async function main() {
@@ -498,6 +537,7 @@ async function main() {
 
     await checkPlayButtons(render, registry, plays);
     await checkCopySignInLink(render, registry, plays);
+    await checkLoginCode(render, registry, plays);
     console.log('[test-launcher-status] all assertions passed');
 }
 

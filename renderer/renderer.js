@@ -3,6 +3,10 @@
 const elements = {
     discordLogin: document.getElementById('discord-login'),
     copyLogin: document.getElementById('copy-login'),
+    loginCode: document.getElementById('login-code'),
+    loginCodeInput: document.getElementById('login-code-input'),
+    loginCodeSubmit: document.getElementById('login-code-submit'),
+    loginCodeError: document.getElementById('login-code-error'),
     play: document.getElementById('play'),
     altEngine: document.getElementById('alt-engine'),
     playProjector: document.getElementById('play-projector'),
@@ -260,6 +264,9 @@ function statusLine(state) {
     if (state.gameRunning) {
         return state.gameEngine === 'projector' ? 'The game is running (Legacy).' : 'The game is running.';
     }
+    if (state.discord.loginPending && state.discord.loginCodeRequired) {
+        return 'Enter the code from your browser.';
+    }
     if (state.discord.loginPending) {
         return 'Finish signing in in your browser...';
     }
@@ -303,6 +310,12 @@ function render(state) {
         elements.copyLogin.textContent = COPY_LOGIN_LABEL;
     }
     elements.copyLogin.hidden = !showCopy;
+    const askCode = Boolean(state.discord.loginPending && state.discord.loginCodeRequired);
+    if (!askCode) {
+        elements.loginCodeInput.value = '';
+    }
+    elements.loginCode.hidden = !askCode;
+    elements.loginCodeError.hidden = !(askCode && state.discord.loginCodeRejected);
     elements.account.hidden = !state.discord.remembered;
     elements.accountName.textContent = accountLabel(state.discord);
     applyPlayButtons(state);
@@ -332,6 +345,8 @@ function render(state) {
                 'Choose the flashplayer_32_sa build for this system.',
             'bad'
         );
+    } else if (state.discord && state.discord.loginCodeEnded) {
+        showProblem('Too many wrong codes, so that sign-in was cancelled. Sign in with Discord again.', 'bad');
     } else if (state.notice) {
         showProblem(state.notice, 'warn');
     } else if (state.serverReachable === false) {
@@ -362,6 +377,24 @@ elements.copyLogin.addEventListener('click', async () => {
     const result = await window.launcher.copySignInLink();
     elements.copyLogin.textContent =
         result && result.ok ? 'Link copied. Paste it into your browser.' : 'The sign-in has ended. Sign in again.';
+});
+
+async function submitLoginCode() {
+    const code = String(elements.loginCodeInput.value || '').trim();
+    if (!code) {
+        return;
+    }
+    await window.launcher.submitLoginCode(code);
+}
+
+elements.loginCodeSubmit.addEventListener('click', () => {
+    void submitLoginCode();
+});
+
+elements.loginCodeInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+        void submitLoginCode();
+    }
 });
 
 elements.discordLogin.addEventListener('click', async () => {
