@@ -18,6 +18,10 @@ on:
         description: "Attach the installers to a release"
         type: boolean
         default: false
+      prerelease:
+        description: "Publish it as a pre-release (needs publish). Auto-update never offers a pre-release."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -255,12 +259,20 @@ jobs:
         with:
           tag_name: v${{ needs.version.outputs.current }}
           name: Launcher v${{ needs.version.outputs.current }}
+          # The tag goes on the commit that was built, which for a manual run from a branch
+          # is not the default branch's head.
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
           # Left as a draft so the unsigned builds get a look before players see them.
           # electron-builder has already uploaded the artifacts and the latest*.yml update
           # metadata to this draft; PUBLISHING the draft (one click, or the API) is what
           # makes the auto-updater see it -- a draft release is invisible to the feed.
-          draft: true
+          #
+          # A manual run with `prerelease` publishes it straight away as a pre-release
+          # instead: downloadable from the releases page, but never offered by auto-update,
+          # which only follows GitHub's "latest" release and that excludes pre-releases.
+          draft: ${{ !(github.event_name == 'workflow_dispatch' && inputs.prerelease) }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
           files: installers/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
