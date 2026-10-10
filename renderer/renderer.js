@@ -2,6 +2,7 @@
 
 const elements = {
     discordLogin: document.getElementById('discord-login'),
+    copyLogin: document.getElementById('copy-login'),
     play: document.getElementById('play'),
     altEngine: document.getElementById('alt-engine'),
     playProjector: document.getElementById('play-projector'),
@@ -171,6 +172,8 @@ function renderEngineStatus(state) {
 
 let currentState = null;
 
+const COPY_LOGIN_LABEL = "Browser didn't open? Copy the sign-in link";
+
 function showProblem(message, severity) {
     elements.problem.hidden = !message;
     elements.problem.textContent = message || '';
@@ -294,6 +297,12 @@ function render(state) {
     elements.discordLogin.querySelector('.label').textContent = state.discord.loginPending
         ? 'Waiting for your browser...'
         : 'Sign in with Discord';
+    // Reset to its own label whenever the sign-in it belongs to is not the one on screen.
+    const showCopy = Boolean(state.discord.loginPending && state.discord.loginLinkAvailable);
+    if (!showCopy) {
+        elements.copyLogin.textContent = COPY_LOGIN_LABEL;
+    }
+    elements.copyLogin.hidden = !showCopy;
     elements.account.hidden = !state.discord.remembered;
     elements.accountName.textContent = accountLabel(state.discord);
     applyPlayButtons(state);
@@ -348,6 +357,12 @@ function render(state) {
     renderEngineStatus(state);
     elements.versions.textContent = `v${state.appVersion}`;
 }
+
+elements.copyLogin.addEventListener('click', async () => {
+    const result = await window.launcher.copySignInLink();
+    elements.copyLogin.textContent =
+        result && result.ok ? 'Link copied. Paste it into your browser.' : 'The sign-in has ended. Sign in again.';
+});
 
 elements.discordLogin.addEventListener('click', async () => {
     const result = await window.launcher.discordLogin();

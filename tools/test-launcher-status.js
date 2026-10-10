@@ -76,6 +76,10 @@ function loadRenderer() {
                 return { ok: true };
             },
             discordLogin: async () => ({ ok: true }),
+            copySignInLink: async () => {
+                plays.push('copy-sign-in-link');
+                return { ok: true };
+            },
             forgetDiscordLogin: async () => null,
             browseFlash: async () => null,
             moveToApplications: async () => ({ ok: true }),
@@ -242,6 +246,29 @@ async function checkPlayButtons(render, registry, plays) {
     assert.strictEqual(registry.get('status').textContent, 'The game is running.');
 
     console.log('[test-launcher-status] FlashBrowser is the main button and Legacy is always offered: OK');
+}
+
+/** While a sign-in waits on the browser, its link can be copied -- and only then. */
+async function checkCopySignInLink(render, registry, plays) {
+    const pending = { linked: false, email: '', name: '', remembered: false, loginPending: true, loginLinkAvailable: true };
+
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { discord: pending }));
+    assert.strictEqual(registry.get('copy-login').hidden, false, 'a pending sign-in offers its link');
+    assert.strictEqual(registry.get('status').textContent, 'Finish signing in in your browser...');
+
+    plays.length = 0;
+    await registry.get('copy-login').listeners.click();
+    assert.deepStrictEqual(plays, ['copy-sign-in-link'], 'the button copies the link');
+    assert.ok(registry.get('copy-login').textContent.includes('copied'), 'and says so');
+
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL));
+    assert.strictEqual(registry.get('copy-login').hidden, true, 'no sign-in in progress, no link');
+    assert.ok(registry.get('copy-login').textContent.includes("Browser didn't open"), 'the label resets for the next sign-in');
+
+    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { discord: { ...pending, loginLinkAvailable: false } }));
+    assert.strictEqual(registry.get('copy-login').hidden, true, 'nothing to copy, no button');
+
+    console.log('[test-launcher-status] a pending sign-in offers its link to copy: OK');
 }
 
 async function main() {
@@ -470,6 +497,7 @@ async function main() {
     console.log('[test-launcher-status] status rows and the account row render correctly in every state');
 
     await checkPlayButtons(render, registry, plays);
+    await checkCopySignInLink(render, registry, plays);
     console.log('[test-launcher-status] all assertions passed');
 }
 

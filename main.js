@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, shell } = require('electron');
 
 const { ChatRelay } = require('./lib/chatRelay');
 const { GameStats } = require('./lib/gameStats');
@@ -101,6 +101,9 @@ let launcherWindow = null;
 let gameProcess = null;
 let gameEngine = '';
 let loginWatcher = null;
+// The browser address of the sign-in in progress, for the "Copy sign-in link" button. It names
+// the sign-in's key by hash only, so it is safe to put on the clipboard.
+let loginLink = '';
 let projector = null;
 let flashBrowser = { offered: false, target: '', found: null, partial: null, tampered: false, tamperReason: '' };
 let discordAccount = { linked: false, email: '', name: '' };
@@ -476,7 +479,8 @@ function launcherState() {
         discord: {
             ...discordAccount,
             remembered,
-            loginPending: Boolean(loginWatcher)
+            loginPending: Boolean(loginWatcher),
+            loginLinkAvailable: Boolean(loginWatcher && loginLink)
         }
     };
 }
@@ -798,8 +802,10 @@ async function play({ engine: requested = '', serverId = '' } = {}) {
 // Discord's consent screen is sent to the player's own browser, never rendered here: the
 // launcher window shows only its own page and loads no remote content at all.
 //
-// Nothing is lost by leaving: the server keys a pending login by requester address, so the
-// launcher's poll sees the sign-in the player completed in their browser.
+// Nothing is lost by leaving: each sign-in carries a one-time key of the launcher's own
+// (lib/discordAuth.js), and the server files the completed login under it as well as under the
+// browser's address, so the launcher's poll sees the sign-in the player completed in their
+// browser -- even a browser behind a VPN or proxy the launcher is not.
 function openDiscordLogin() {
     const { selected } = resolveSelectedServer();
     if (!selected) {
@@ -809,16 +815,21 @@ function openDiscordLogin() {
         return { ok: true };
     }
 
-    const authUrl = discordAuth.absolute(selected.url, '/auth/discord');
+    const loginKey = discordAuth.createLoginKey();
+    const authUrl = discordAuth.loginUrl(selected.url, loginKey);
     if (!normalizeHttpUrl(authUrl)) {
         return { ok: false, message: 'The sign-in address is not valid.' };
     }
 
+    // On Linux Electron reports the browser as opened even when xdg-open failed, so the window
+    // also offers the link to copy for as long as the sign-in is pending.
+    loginLink = authUrl;
     openExternal(authUrl);
 
-    loginWatcher = discordAuth.watchForLogin(selected.url);
+    loginWatcher = discordAuth.watchForLogin(selected.url, { loginKey });
     void loginWatcher.promise.then(async (pending) => {
         loginWatcher = null;
+        loginLink = '';
         if (!pending) {
             pushState();
             return;
@@ -828,7 +839,7 @@ function openDiscordLogin() {
         // While the hand-off this sign-in created is still live, which is what the server
         // grants the token against. It is also what play() below spends, so the token has to
         // be asked for first.
-        await captureLauncherSession(selected.url, pending.email);
+        await captureLauncherSession(selected.url, pending.email, loginKey);
         // A game already open needs nothing: the server's OAuth callback signs its open
         // connection in by itself. Otherwise this sign-in is what the player was waiting on.
         if (!gameProcess) {
@@ -997,8 +1008,8 @@ function stopAccountPolling() {
 }
 
 /** Take the device token the server offers while this sign-in is still fresh. */
-async function captureLauncherSession(gameUrl, email) {
-    const issued = await discordAuth.issueSession(gameUrl);
+async function captureLauncherSession(gameUrl, email, loginKey = '') {
+    const issued = await discordAuth.issueSession(gameUrl, loginKey);
     if (!issued) {
         // An older server, or one that did not offer one. The player is signed in for this
         // session; the next start simply asks again, which is where we started.
@@ -1131,6 +1142,15 @@ function registerIpc() {
     ipcMain.handle('launcher:getState', () => launcherState());
 
     ipcMain.handle('launcher:discordLogin', () => openDiscordLogin());
+
+    // For a browser that did not open, or opened somewhere the player is not looking.
+    ipcMain.handle('launcher:copySignInLink', () => {
+        if (!loginWatcher || !loginLink) {
+            return { ok: false };
+        }
+        clipboard.writeText(loginLink);
+        return { ok: true };
+    });
 
     ipcMain.handle('launcher:forgetDiscordLogin', () => {
         forgetDiscordLogin();

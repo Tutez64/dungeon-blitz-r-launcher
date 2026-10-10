@@ -320,8 +320,20 @@ FlashBrowser still needs the Flash host, so it ships its own Electron 11 as a se
 its own process and profile; the launcher, its IPC and its sign-in never do.
 
 Discord's consent screen still opens in the player's own browser rather than inside the app,
-because the launcher window loads no remote content. The server keys a pending sign-in by
-requester address, so the launcher's poll still sees the result.
+because the launcher window loads no remote content. The launcher still sees the result:
+
+- Each sign-in has a one-time key of the launcher's own. The browser opens
+  `/auth/discord?launcher=<sha256 of the key>`, and the server signs that hash into the OAuth
+  state and files the finished login under it.
+- The launcher's poll and its device-token request send the key itself in an
+  `X-Launcher-Login-Key` header. So the login is found even when the browser reaches the server
+  from another address than the launcher, for example through a browser VPN or proxy.
+- The key is never in the browser, a URL or a log. Someone who only sees the sign-in link
+  cannot claim the login.
+- A server without this matches the browser and the launcher by address, as it always did.
+- While a sign-in is pending, the window offers **Copy the sign-in link**. On Linux, Electron
+  reports the browser as opened even when `xdg-open` failed, so this is the way through when
+  no browser appears.
 
 ## Binaries: `payload/` and `vendor/`
 
@@ -781,6 +793,7 @@ drives the module against a local mock.
 | `tools/test-windows-support.js` | Which Windows versions and architectures start, and how the others are refused |
 | `tools/test-projector.js` | Finding Flash Player, the SWF it opens, the pinned downloads, and the presence and region-latency work done for the game page |
 | `tools/test-flash-browser.js` | Which machines get FlashBrowser, finding it, how it is started, its fingerprint, and that the lock, the plugin payload and packaging agree |
+| `tools/test-discord-login-key.js` | The Discord sign-in's one-time key: only its hash in the browser URL, the key in a header, and a login finished at another address still reaching the launcher |
 
 `.github/workflows/tests.yml` runs them on every push and pull request, so a broken Flash
 guard, presence mapping or chat relay fails before an installer is built.
