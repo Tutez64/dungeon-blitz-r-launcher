@@ -72,6 +72,27 @@ function main() {
         'build.win must produce an nsis and a portable installer'
     );
 
+    // The setup installer must refuse Windows 7/8/8.1 before it touches the old install.
+    // 1.1.0 launchers there still auto-update, and electron-updater runs this installer on
+    // quit with /S: without the guard they replace a working launcher with one Electron
+    // cannot start. Nothing else notices if the guard goes: an installer without it builds
+    // and installs fine on every machine CI or a developer has.
+    const nsisInclude = buildConfig.nsis && buildConfig.nsis.include;
+    assert.ok(nsisInclude, 'package.json build.nsis.include must name the installer script (build/installer.nsh)');
+    const nsisIncludePath = path.join(__dirname, '..', nsisInclude);
+    assert.ok(fs.existsSync(nsisIncludePath), `build.nsis.include points at ${nsisInclude}, which does not exist`);
+
+    // Only the customInit macro runs early enough: it is inserted into .onInit, before the
+    // install section that calls uninstallOldVersion.
+    const nsisScript = fs.readFileSync(nsisIncludePath, 'utf8').replace(/^\s*;.*$/gm, '');
+    const customInit = nsisScript.match(/!macro\s+customInit\b([\s\S]*?)!macroend/);
+    assert.ok(customInit, `${nsisInclude} must define the customInit macro`);
+    assert.match(customInit[1], /\$\{IfNot\}\s+\$\{AtLeastWin10\}/, 'customInit must check ${AtLeastWin10}');
+    assert.match(customInit[1], /\bQuit\b/, 'customInit must Quit on Windows older than 10');
+    // /SD keeps a silent run (/S, the install-on-quit path) from blocking on a dialog
+    // nobody sees.
+    assert.match(customInit[1], /MessageBox[^\n]*\/SD\s+IDOK/, 'the MessageBox must carry /SD IDOK for silent runs');
+
     // And the ia32 run has to exist in the workflow, or 32-bit silently stops shipping.
     const workflow = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'release.yml'), 'utf8');
 
@@ -122,6 +143,7 @@ function main() {
 
     console.log('[test-package-files] every runtime file is covered by build.files');
     console.log('[test-package-files] Windows arches are built one per run, so no universal installer is built');
+    console.log('[test-package-files] the setup installer refuses Windows older than 10 before uninstalling anything');
     console.log('[test-package-files] all assertions passed');
 }
 

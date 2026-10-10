@@ -122,7 +122,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install Linux build dependencies
         if: matrix.platform == 'linux'
@@ -264,6 +264,11 @@ jobs:
           # The tag goes on the commit that was built, which for a manual run from a branch
           # is not the default branch's head.
           target_commitish: ${{ github.sha }}
+          # Put before the generated notes. Launchers on Windows 7/8 (1.1.0 and earlier) still
+          # download every release, and the setup installer refuses to run there
+          # (build/installer.nsh). This line is for the player who checks the releases page.
+          body: |
+            **Windows:** needs Windows 10 or later. On Windows 7, 8 or 8.1, keep using launcher 1.1.0. The installer will not run there and leaves the installed launcher as it is.
           generate_release_notes: true
           # Left as a draft so the unsigned builds get a look before players see them.
           # electron-builder has already uploaded the artifacts and the latest*.yml update
