@@ -1,0 +1,27 @@
+{
+    "version": "32.0.0.465",
+    "win32": {
+        "file": "flashplayer_32_sa.exe",
+        "sha256": "",
+        "urls": [
+            "https://fpdownload.macromedia.com/pub/flashplayer/updaters/32/flashplayer_32_sa.exe",
+            "https://web.archive.org/web/2021id_/https://fpdownload.macromedia.com/pub/flashplayer/updaters/32/flashplayer_32_sa.exe"
+        ]
+    },
+    "darwin": {
+        "file": "flashplayer_32_sa.dmg",
+        "sha256": "",
+        "urls": [
+            "https://fpdownload.macromedia.com/pub/flashplayer/updaters/32/flashplayer_32_sa.dmg",
+            "https://web.archive.org/web/2021id_/https://fpdownload.macromedia.com/pub/flashplayer/updaters/32/flashplayer_32_sa.dmg"
+        ]
+    },
+    "linux": {
+        "file": "flash_player_sa_linux.x86_64.tar.gz",
+        "sha256": "",
+        "urls": [
+            "https://fpdownload.macromedia.com/pub/flashplayer/updaters/32/flash_player_sa_linux.x86_64.tar.gz",
+            "https://web.archive.org/web/2021id_/https://fpdownload.macromedia.com/pub/flashplayer/updaters/32/flash_player_sa_linux.x86_64.tar.gz"
+        ]
+    }
+}

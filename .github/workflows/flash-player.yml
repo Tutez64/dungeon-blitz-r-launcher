@@ -1,0 +1,53 @@
+name: Flash Player
+
+# Proves that every platform's standalone Flash Player (flashplayer_32_sa) can still be
+# fetched and unpacked, and that the bytes match projector.lock.json. Releases fetch it
+# the same way; this catches a dead mirror before a release does.
+
+on:
+  push:
+    paths:
+      - "projector.lock.json"
+      - "tools/fetch-projector.js"
+      - "lib/projector.js"
+      - ".github/workflows/flash-player.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, platform: win32, label: Windows }
+          - { os: macos-15-intel, platform: darwin, label: macOS }
+          - { os: ubuntu-22.04, platform: linux, label: Linux }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Show the hashes the mirrors serve
+        shell: bash
+        run: node tools/fetch-projector.js --platform ${{ matrix.platform }} --print-hash
+
+      - name: Fetch and unpack
+        shell: bash
+        run: node tools/fetch-projector.js --platform ${{ matrix.platform }}
+
+      - name: What was unpacked
+        shell: bash
+        run: |
+          find vendor/projector -maxdepth 4 | head -50
+          file vendor/projector/${{ matrix.platform }}/* 2>/dev/null || true
