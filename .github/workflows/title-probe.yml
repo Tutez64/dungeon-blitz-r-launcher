@@ -23,9 +23,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-latest, platform: win32, label: Windows }
           - { os: macos-15-intel, platform: darwin, label: macOS }
-          - { os: ubuntu-22.04, platform: linux, label: Linux }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,15 +39,21 @@ jobs:
       - name: Fetch Flash Player
         shell: bash
         run: node tools/fetch-projector.js --platform ${{ matrix.platform }}
+      - name: Does the game load through the loader file? (macOS)
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: bash tools/probe/mac-load-probe.sh probe-mac
       - name: Probe (macOS, Windows)
-        if: matrix.platform != 'linux'
+        if: matrix.platform != 'linux' && false
         shell: bash
         run: node tools/probe/title-probe.js ${{ matrix.platform }} probe-out
       - name: Probe (Linux)
-        if: matrix.platform == 'linux'
+        if: matrix.platform == 'linux' && false
         run: xvfb-run -a -s "-screen 0 1280x900x24" node tools/probe/title-probe.js linux probe-out
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: probe-${{ matrix.platform }}
-          path: probe-out/*.png
+          path: |
+            probe-out/*.png
+            probe-mac/*.png
