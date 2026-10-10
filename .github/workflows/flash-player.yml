@@ -38,10 +38,6 @@ jobs:
         with:
           node-version: 20
 
-      - name: Show the hashes the mirrors serve
-        shell: bash
-        run: node tools/fetch-projector.js --platform ${{ matrix.platform }} --print-hash
-
       - name: Fetch and unpack
         shell: bash
         run: node tools/fetch-projector.js --platform ${{ matrix.platform }}
@@ -51,3 +47,20 @@ jobs:
         run: |
           find vendor/projector -maxdepth 4 | head -50
           file vendor/projector/${{ matrix.platform }}/* 2>/dev/null || true
+
+      - name: Adobe's signature on the Windows player
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature vendor/projector/win32/flashplayer_32_sa.exe
+          $signature | Format-List Status, SignerCertificate
+          (Get-Item vendor/projector/win32/flashplayer_32_sa.exe).VersionInfo | Format-List FileVersion, CompanyName
+
+      - name: Adobe's signature on the macOS player
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: |
+          codesign --verify --deep --verbose=2 "vendor/projector/darwin/Flash Player.app" || true
+          codesign -dvv "vendor/projector/darwin/Flash Player.app" 2>&1 | grep -E 'Authority|Identifier|TeamIdentifier' || true
+          lipo -info "vendor/projector/darwin/Flash Player.app/Contents/MacOS/"* || true
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "vendor/projector/darwin/Flash Player.app/Contents/Info.plist"
