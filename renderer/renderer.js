@@ -20,64 +20,19 @@ const elements = {
 };
 
 /**
- * The rows under the problem banner: which Flash Player the game runs in, whether Discord shows the
- * player as playing, and what the two chat directions are doing. The values stay short and
- * the detail (paths, last status, last error) moves into the tooltip, so the row is
- * readable at a glance without becoming a log.
+ * The rows under the problem banner, kept to what a player cares about: whether Discord
+ * shows them as playing, whether their lobby chat is connected, whether their widget
+ * profile was written, and which version they run. The values stay short and the detail
+ * (last status, last error) moves into the tooltip.
+ *
+ * Machine and engine details -- the Windows build, the Flash Player path, the chat mirror's
+ * counters -- are not rows: a fault there is said in the problem banner above instead, which
+ * is where it can be acted on.
  */
 function engineRows(state) {
-    const flash = state.flash || {};
     const social = state.social || {};
     const presence = state.presence || {};
-    const chat = state.chat || {};
     const widget = state.gameStats || {};
-    const system = state.windows || {};
-
-    // What this Windows costs. Windows 7 and 8 draw the launcher window on a software
-    // rasteriser. The game is not affected -- it runs in Flash Player, which renders on its
-    // own -- but the row says so, so a slow launcher window does not read as a fault.
-    let systemValue = 'supported';
-    let systemTone = 'muted';
-    let systemDetail = 'This launcher runs here with hardware rendering.';
-    if (!system.product) {
-        systemValue = 'not a Windows build';
-        systemDetail = 'The Windows compatibility fallback applies only on Windows.';
-    } else if (!system.supported) {
-        systemValue = 'this Windows is too old';
-        systemTone = 'bad';
-        systemDetail = system.reason || system.requirements;
-    } else if (system.softwareRendering) {
-        systemValue = `${system.product} - software rendering`;
-        systemTone = 'warn';
-        systemDetail =
-            "Chromium 87 cannot drive this machine's GPU, so the launcher window renders in software. " +
-            'The game runs in Flash Player and is not affected.';
-    } else if (system.legacy) {
-        systemValue = system.product;
-        systemTone = 'ok';
-        systemDetail = 'A legacy Windows that still runs the game with hardware rendering.';
-    } else {
-        systemValue = system.product;
-    }
-
-    // The standalone Flash Player (flashplayer_32_sa) the game runs in.
-    let flashValue = 'missing';
-    let flashTone = 'bad';
-    let flashDetail = 'No Flash Player was found. Choose the standalone Flash Player (flashplayer_32_sa) by hand.';
-    if (flash.found) {
-        flashDetail = flash.path || '';
-        if (flash.tampered) {
-            flashValue = 'changed - reinstall';
-            flashTone = 'bad';
-            flashDetail = `${flash.path || ''}\nThese files do not match the Flash Player this launcher was installed with.`;
-        } else if (flash.archMismatch) {
-            flashValue = `${(flash.architectures || []).join('/')}-only - cannot run here`;
-            flashTone = 'bad';
-        } else {
-            flashValue = [flash.version || 'unknown version', flash.source].filter(Boolean).join(' - ');
-            flashTone = 'ok';
-        }
-    }
 
     // "Starts with the game" is the normal state on the sign-in screen: the bridge is
     // deliberately idle until a game session asks for it.
@@ -123,48 +78,28 @@ function engineRows(state) {
         presenceDetail = presence.lastError;
     }
 
-    // In-game chat cannot be read from the launcher, so this reflects the server's feed:
-    // without it there is nothing to mirror, and the row says so instead of staying silent.
-    let chatValue = 'starts with the game';
-    let chatTone = 'muted';
-    let chatDetail = 'Game chat is mirrored to your Discord lobby while you play.';
-    if (chat.running) {
-        if (chat.supported === false) {
-            chatValue = 'server has no chat feed';
-            chatTone = 'warn';
-            chatDetail = chat.lastError || 'This server does not expose a chat feed yet.';
-        } else if (chat.lastError) {
-            chatValue = `${chat.relayed} sent - ${chat.received} received`;
-            chatTone = 'warn';
-            chatDetail = chat.lastError;
-        } else if (chat.supported === true) {
-            chatValue = `${chat.relayed} sent - ${chat.received} received`;
-            chatTone = 'ok';
-            chatDetail = 'Your own game chat goes to your lobby; lobby chat prints in game.';
-        }
-    } else if (!chat.enabled) {
-        chatValue = 'off';
-        chatDetail = 'Disabled with DUNGEON_BLITZ_CHAT_RELAY=0.';
-    }
-
-    // The update row: quiet unless there is something a player can act on. A downloaded
-    // update is 'ok' (the restart button appears below), a check failure stays 'muted' --
-    // offline moments and unsigned-macOS limits are not launcher faults.
+    // The version row: the version this launcher is, and what the updater is doing about the
+    // next one. Quiet unless there is something a player can act on: a downloaded update is
+    // 'ok' (the restart button appears below), a check failure stays 'muted' -- offline
+    // moments and unsigned-macOS limits are not launcher faults.
     const update = state.update || {};
-    let updateValue = 'up to date';
+    const current = `v${state.appVersion || update.currentVersion || ''}`;
+    let updateValue = `${current} - up to date`;
     let updateTone = 'muted';
     let updateDetail = 'The launcher checks GitHub for a newer version after start and every six hours.';
     if (update.state === 'disabled') {
-        updateValue = 'off in this build';
+        updateValue = current;
         updateDetail = 'Updates are checked only in an installed launcher.';
     } else if (update.state === 'downloading') {
-        updateValue = update.percent ? `downloading ${update.version} - ${update.percent}%` : `downloading ${update.version}`;
+        updateValue = update.percent
+            ? `${current} - downloading ${update.version} (${update.percent}%)`
+            : `${current} - downloading ${update.version}`;
         updateTone = 'warn';
     } else if (update.state === 'downloaded') {
-        updateValue = `${update.version} ready - restart to install`;
+        updateValue = `${current} - ${update.version} ready, restart to install`;
         updateTone = 'ok';
     } else if (update.state === 'checking') {
-        updateValue = 'checking...';
+        updateValue = `${current} - checking...`;
     }
 
     // The Discord widget is filled by the game server, which holds the bot token; the
@@ -203,13 +138,10 @@ function engineRows(state) {
     }
 
     return [
-        { label: 'Windows', value: systemValue, tone: systemTone, detail: systemDetail },
-        { label: 'Flash', value: flashValue, tone: flashTone, detail: flashDetail },
         { label: 'Discord status', value: presenceValue, tone: presenceTone, detail: presenceDetail },
         { label: 'Lobby chat', value: socialValue, tone: socialTone, detail: socialDetail },
-        { label: 'In-game chat', value: chatValue, tone: chatTone, detail: chatDetail },
         { label: 'Game stats', value: widgetValue, tone: widgetTone, detail: widgetDetail },
-        { label: 'Update', value: updateValue, tone: updateTone, detail: updateDetail }
+        { label: 'Version', value: updateValue, tone: updateTone, detail: updateDetail }
     ];
 }
 

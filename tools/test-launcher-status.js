@@ -2,8 +2,9 @@
 'use strict';
 
 /**
- * Checks what the launcher window actually renders -- the status rows (Flash, Discord rich
- * presence, lobby chat, the in-game chat mirror, the widget profile) and the account row --
+ * Checks what the launcher window actually renders -- the status rows (Discord rich
+ * presence, lobby chat, the widget profile, the version), the problem banner and the
+ * account row --
  * for every combination of state, without needing Electron: renderer.js runs against a
  * minimal DOM stub and the results are read back.
  *
@@ -195,71 +196,22 @@ function main() {
     assert.deepStrictEqual(
         rows.map((entry) => [entry.label, entry.value, entry.tone]),
         [
-            ['Windows', 'Windows 10 or later', 'muted'],
-            ['Flash', '32.0.0.465 - vendor', 'ok'],
             ['Discord status', 'Home - Idling in town', 'ok'],
             ['Lobby chat', 'connected', 'ok'],
-            ['In-game chat', '3 sent - 1 received', 'ok'],
             ['Game stats', 'starts with the game', 'muted'],
-            ['Update', 'up to date', 'muted']
-        ]
+            ['Version', 'v1.0.0 - up to date', 'muted']
+        ],
+        'only the four rows a player cares about'
     );
-    assert.ok(row(rows, 'Flash').detail.includes('Flash Player.app'), 'the Flash Player path is the tooltip');
+    for (const hidden of ['Windows', 'Flash', 'In-game chat', 'Update']) {
+        assert.ok(!rows.some((entry) => entry.label === hidden), `no ${hidden} row`);
+    }
     assert.strictEqual(row(rows, 'Lobby chat').detail, 'Lobby chat connected.');
     assert.ok(row(rows, 'Discord status').detail.includes('47631'), 'the local presence endpoint is the tooltip');
 
-    // The machine row: Windows 7 runs the launcher on a software rasteriser, and a player
-    // who did not know that would read the frame rate as a fault in the launcher.
-    const WINDOWS_7 = {
-        supported: true,
-        product: 'Windows 7 SP1',
-        legacy: true,
-        softwareRendering: true,
-        reason: '',
-        requirements: 'Windows 7 Service Pack 1, Windows 8 or Windows 8.1, 64-bit.'
-    };
-    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { windows: WINDOWS_7 }));
-    rows = rowsFrom(registry);
-    assert.strictEqual(row(rows, 'Windows').value, 'Windows 7 SP1 - software rendering');
-    assert.strictEqual(row(rows, 'Windows').tone, 'warn');
-    assert.ok(row(rows, 'Windows').detail.includes('software'), row(rows, 'Windows').detail);
-    assert.ok(row(rows, 'Windows').detail.includes('not affected'), 'the game itself is not slowed down');
-
-    // A Windows the pinned runtime cannot run on: said in the strip, not left to decode
-    // from a launcher that would not have started.
-    render(
-        baseState(ARMED_FLASH, IDLE_SOCIAL, {
-            windows: {
-                supported: false,
-                product: 'Windows Vista',
-                legacy: true,
-                softwareRendering: false,
-                reason: 'Windows Vista is older than Windows 7 Service Pack 1 (64-bit).',
-                requirements: ''
-            }
-        })
-    );
-    rows = rowsFrom(registry);
-    assert.strictEqual(row(rows, 'Windows').value, 'this Windows is too old');
-    assert.strictEqual(row(rows, 'Windows').tone, 'bad');
-    assert.ok(row(rows, 'Windows').detail.includes('Windows Vista'), row(rows, 'Windows').detail);
-
-    // A macOS or Linux build has no Windows to talk about, and says so rather than
-    // pretending to know.
-    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { windows: { supported: true, product: '', legacy: false, softwareRendering: false, reason: '', requirements: '' } }));
-    assert.strictEqual(row(rowsFrom(registry), 'Windows').value, 'not a Windows build');
-
-    // A plugin whose architecture cannot load here.
-    render(baseState({ ...ARMED_FLASH, archMismatch: true }, IDLE_SOCIAL));
-    rows = rowsFrom(registry);
-    assert.strictEqual(row(rows, 'Flash').value, 'x64-only - cannot run here');
-    assert.strictEqual(row(rows, 'Flash').tone, 'bad');
-
     // A Flash Player that no longer matches the installed one: refused, and said so.
+    // There is no Flash row any more: the banner is where it is said.
     render(baseState({ ...ARMED_FLASH, armed: false, locked: true, tampered: true }, IDLE_SOCIAL));
-    rows = rowsFrom(registry);
-    assert.strictEqual(row(rows, 'Flash').value, 'changed - reinstall');
-    assert.strictEqual(row(rows, 'Flash').tone, 'bad');
     assert.ok(registry.get('problem').textContent.includes('Reinstall'), registry.get('problem').textContent);
     assert.strictEqual(registry.get('play').disabled, true, 'a tampered Flash Player cannot be started');
     assert.strictEqual(registry.get('browse-flash').hidden, true, 'an installed launcher offers no Flash Player picker');
@@ -267,12 +219,10 @@ function main() {
     // Everything idle is normal: presence and chat both start with the game.
     render(baseState(MISSING_FLASH, IDLE_SOCIAL));
     rows = rowsFrom(registry);
-    assert.strictEqual(row(rows, 'Flash').value, 'missing');
-    assert.strictEqual(row(rows, 'Flash').tone, 'bad');
+    assert.ok(registry.get('problem').textContent.includes('Flash Player is missing'), 'a missing Flash Player is in the banner');
     assert.strictEqual(row(rows, 'Discord status').value, 'starts with the game');
     assert.strictEqual(row(rows, 'Discord status').tone, 'muted');
     assert.strictEqual(row(rows, 'Lobby chat').value, 'starts with the game');
-    assert.strictEqual(row(rows, 'In-game chat').value, 'starts with the game');
 
     // Discord closed while the game runs: presence cannot be published.
     render(
@@ -284,24 +234,6 @@ function main() {
     assert.strictEqual(row(rows, 'Discord status').value, 'waiting for Discord');
     assert.strictEqual(row(rows, 'Discord status').tone, 'warn');
     assert.strictEqual(row(rows, 'Discord status').detail, 'Discord is not running.');
-
-    // A server without the chat feed (the official one until it is redeployed).
-    render(
-        baseState(ARMED_FLASH, IDLE_SOCIAL, {
-            chat: {
-                enabled: true,
-                running: true,
-                supported: false,
-                relayed: 0,
-                received: 0,
-                lastError: 'This server does not mirror game chat to Discord yet.'
-            }
-        })
-    );
-    rows = rowsFrom(registry);
-    assert.strictEqual(row(rows, 'In-game chat').value, 'server has no chat feed');
-    assert.strictEqual(row(rows, 'In-game chat').tone, 'warn');
-    assert.strictEqual(row(rows, 'In-game chat').detail, 'This server does not mirror game chat to Discord yet.');
 
     // The widget row: a written profile is the one state that means the widget has data to
     // show -- which is exactly what a player sees, or does not see, on their own profile and
@@ -368,10 +300,6 @@ function main() {
     render(baseState(ARMED_FLASH, IDLE_SOCIAL));
     assert.strictEqual(registry.get('game-stats-sync').hidden, true, 'no sync button without a session');
 
-    // Chat mirroring turned off by configuration.
-    render(baseState(ARMED_FLASH, IDLE_SOCIAL, { chat: { enabled: false, running: false, supported: null, relayed: 0, received: 0, lastError: '' } }));
-    assert.strictEqual(row(rowsFrom(registry), 'In-game chat').value, 'off');
-
     // Lobby chat turned off by configuration.
     render(baseState(ARMED_FLASH, { ...IDLE_SOCIAL, enabled: false }));
     assert.strictEqual(row(rowsFrom(registry), 'Lobby chat').value, 'off');
@@ -402,22 +330,23 @@ function main() {
     assert.strictEqual(row(rows, 'Lobby chat').value, 'Discord client not running');
     assert.strictEqual(row(rows, 'Lobby chat').tone, 'bad');
 
-    // The Update row: quiet when up to date, loud when an install is waiting.
+    // The Version row: this launcher's version, quiet when up to date, loud when an install
+    // is waiting.
     render(baseState(ARMED_FLASH, IDLE_SOCIAL, { update: { state: 'downloading', percent: 42, version: '1.1.0', error: '', currentVersion: '1.0.4' } }));
     rows = rowsFrom(registry);
-    assert.strictEqual(row(rows, 'Update').value, 'downloading 1.1.0 - 42%');
-    assert.strictEqual(row(rows, 'Update').tone, 'warn');
+    assert.strictEqual(row(rows, 'Version').value, 'v1.0.0 - downloading 1.1.0 (42%)');
+    assert.strictEqual(row(rows, 'Version').tone, 'warn');
     assert.strictEqual(registry.get('update-install').hidden, true, 'no restart button mid-download');
 
     render(baseState(ARMED_FLASH, IDLE_SOCIAL, { update: { state: 'downloaded', percent: 100, version: '1.1.0', error: '', currentVersion: '1.0.4' } }));
     rows = rowsFrom(registry);
-    assert.strictEqual(row(rows, 'Update').value, '1.1.0 ready - restart to install');
-    assert.strictEqual(row(rows, 'Update').tone, 'ok');
+    assert.strictEqual(row(rows, 'Version').value, 'v1.0.0 - 1.1.0 ready, restart to install');
+    assert.strictEqual(row(rows, 'Version').tone, 'ok');
     assert.strictEqual(registry.get('update-install').hidden, false, 'the restart button appears when the update is complete');
 
     render(baseState(ARMED_FLASH, IDLE_SOCIAL, { update: { state: 'disabled', percent: 0, version: '', error: '', currentVersion: '1.0.4' } }));
     rows = rowsFrom(registry);
-    assert.strictEqual(row(rows, 'Update').value, 'off in this build');
+    assert.strictEqual(row(rows, 'Version').value, 'v1.0.0', 'a development checkout shows just its version');
     assert.strictEqual(registry.get('update-install').hidden, true);
 
     // A remembered account replaces the sign-in button entirely.

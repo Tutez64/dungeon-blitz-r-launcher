@@ -114,11 +114,21 @@ with no Flash in it, and the build check only printed a warning that nobody read
 
 ### The status strip
 
-The sign-in screen carries a status strip. The `Flash` row shows the player's version and
-where it came from (`vendor`, `auto` or `manual`), or `missing`. The other rows show
-`Discord status`, `Lobby chat` and `In-game chat`. Hovering a value shows the Flash Player
-path, the local presence endpoint, or the last error. `main.js` prints the same Flash line on
-the console, and `node tools/test-launcher-status.js` checks every state of that strip.
+The sign-in screen carries a status strip with four rows, the ones a player cares about:
+
+| Row | Shows |
+| --- | --- |
+| `Discord status` | Whether Discord shows the player as playing |
+| `Lobby chat` | Whether the player's Discord lobby is connected |
+| `Game stats` | Whether the Discord widget profile was written |
+| `Version` | This launcher's version, and any update being downloaded or ready to install |
+
+Hovering a value shows the detail: the local presence endpoint, or the last error.
+
+Machine and engine details are not rows. A missing, changed or unrunnable Flash Player, or a
+Windows that is too old, is said in the problem banner above the strip instead. `main.js`
+prints the Flash Player line on the console, and `node tools/test-launcher-status.js`
+checks every state of the strip and the banner.
 
 Once an account is known, the sign-in button is replaced by `Signed in as <name>`. That holds
 whether the sign-in happened in the launcher or inside the game, where the SWF's own Discord
