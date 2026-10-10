@@ -402,9 +402,17 @@ function testWindowTitle() {
         assert.ok(fs.readFileSync(path.join(root, 'Dungeon Blitz: R')).equals(buildLoaderSwf(url)), 'the loader points at this game');
         assert.ok(!mac.args.join(' ').includes('http'), 'no address reaches the macOS title');
 
-        const linux = projector.prepareLaunch({ path: '/x/flashplayer' }, url, { platform: 'linux', workDir: root });
+        const linux = projector.prepareLaunch({ path: '/x/flashplayer' }, url, { platform: 'linux', workDir: root, env: { HOME: '/home/p' } });
         assert.deepStrictEqual(linux.args, [url]);
         assert.strictEqual(linux.cwd, undefined);
+        assert.strictEqual(linux.env.VDPAU_DRIVER, projector.NO_VDPAU_DRIVER, 'Linux Flash Player draws in software, not through VDPAU');
+        assert.strictEqual(linux.env.HOME, '/home/p', 'the rest of the environment is kept');
+
+        const forced = projector.linuxFlashEnv({ VDPAU_DRIVER: 'radeonsi' });
+        assert.strictEqual(forced.VDPAU_DRIVER, projector.NO_VDPAU_DRIVER, 'a system-wide VDPAU driver does not reach Flash Player');
+        const kept = projector.linuxFlashEnv({ VDPAU_DRIVER: 'radeonsi', DUNGEON_BLITZ_FLASH_VDPAU: '1' });
+        assert.strictEqual(kept.VDPAU_DRIVER, 'radeonsi', 'DUNGEON_BLITZ_FLASH_VDPAU=1 keeps the player\'s own driver');
+        assert.strictEqual(mac.env, undefined, 'macOS is started with the launcher\'s environment');
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }

@@ -490,12 +490,12 @@ async function launchProjector(serverUrl, settings) {
     } catch (error) {
         return { ok: false, message: `Flash Player could not be prepared: ${(error && error.message) || error}` };
     }
-    const { command, args, cwd } = launch;
+    const { command, args, cwd, env } = launch;
     console.log(`[Flash] Starting ${command} ${args.join(' ')}${cwd ? ` in ${cwd}` : ''} for ${swfUrl}`);
 
     let child;
     try {
-        child = spawn(command, args, { stdio: 'ignore', windowsHide: false, cwd });
+        child = spawn(command, args, { stdio: 'ignore', windowsHide: false, cwd, env });
     } catch (error) {
         return { ok: false, message: `Flash Player could not be started: ${(error && error.message) || error}` };
     }

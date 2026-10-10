@@ -103,6 +103,18 @@ install places and in Downloads, and the **Choose Flash Player...** button takes
 hand. A new choice applies on the next game with no restart, because the player is started
 fresh for every game.
 
+### Colours on Linux
+
+On Linux, Flash Player draws the game through VDPAU when it can. It hands VDPAU the
+picture with two colour planes swapped. libvdpau corrects that only for the browser
+plugin, never for the standalone player. Left alone, the game shows up in false colours: a
+yellow sky and a green wash over everything, with true-colour boxes here and there.
+
+So the launcher starts Flash Player on Linux with `VDPAU_DRIVER=none`. No such VDPAU
+backend exists, so VDPAU does not open and Flash Player draws in software, as it does on
+any machine without VDPAU. A player whose driver does draw the game correctly can keep
+hardware drawing by starting the launcher with `DUNGEON_BLITZ_FLASH_VDPAU=1`.
+
 ### The window title
 
 The game window always reads **Dungeon Blitz: R**, never the game's address. Flash Player

@@ -74,7 +74,7 @@ for w in (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String
     }
     const swfUrl = await resolveSwfUrl(SERVER);
     const launch = prepareLaunch(projector, swfUrl, { workDir: path.join(os.tmpdir(), 'db-game') });
-    const child = spawn(launch.command, launch.args, { cwd: launch.cwd, stdio: 'ignore' });
+    const child = spawn(launch.command, launch.args, { cwd: launch.cwd, env: launch.env, stdio: 'ignore' });
     const keeper = keepGameTitle(child.pid);
     console.log(`[check-window-title] started ${launch.command} ${launch.args.join(' ')} (title keeper: ${keeper.method})`);
 
