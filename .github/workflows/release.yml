@@ -268,11 +268,22 @@ jobs:
           # metadata to this draft; PUBLISHING the draft (one click, or the API) is what
           # makes the auto-updater see it -- a draft release is invisible to the feed.
           #
-          # A manual run with `prerelease` publishes it straight away as a pre-release
-          # instead: downloadable from the releases page, but never offered by auto-update,
-          # which only follows GitHub's "latest" release and that excludes pre-releases.
-          draft: ${{ !(github.event_name == 'workflow_dispatch' && inputs.prerelease) }}
-          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
+          # Always a draft here, even for a pre-release: electron-builder has already made a
+          # draft for this tag, and asking this action for a published release creates a
+          # second release that takes the tag, after which the draft holding the installers
+          # can no longer be published (1.0.17's first attempt). The step below publishes.
+          draft: true
           files: installers/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish as a pre-release
+        # A manual run with `prerelease`: downloadable from the releases page, but never
+        # offered by auto-update, which only follows GitHub's "latest" release and that
+        # excludes pre-releases.
+        if: github.event_name == 'workflow_dispatch' && inputs.prerelease
+        run: |
+          gh release edit "v${{ needs.version.outputs.current }}" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft=false --prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
