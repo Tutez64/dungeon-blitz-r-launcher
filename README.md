@@ -61,6 +61,26 @@ install places and in Downloads, and the **Choose Flash Player...** button takes
 hand. A new choice applies on the next game with no restart, because the player is started
 fresh for every game.
 
+### The window title
+
+The game window always reads **Dungeon Blitz: R**, never the game's address. Flash Player
+names its own window, so how that is achieved differs by platform:
+
+| Platform | Flash Player's own title | What the launcher does |
+| --- | --- | --- |
+| Windows | `Adobe Flash Player 32` | Renames the window to `Dungeon Blitz: R` through the Win32 API. It repeats this every second while the game runs, because Flash Player sets its title again on its own. |
+| macOS | The full game URL | No app can rename another app's window. So Flash Player is started on a local file named `Dungeon Blitz: R` (`lib/loaderSwf.js`, written to the launcher's data folder before every game), whose only job is to load the game from the server. |
+| Linux | `Adobe Flash Player 32,0,0,465` | Renames the window when `xdotool` is installed. Without it, the title stays Flash Player's own name. |
+
+On macOS, Flash Player names the window after exactly what it was started on. That is why
+the launcher runs it from the file's own folder, with just the name as the argument. A
+macOS runner confirmed the result: the same game window and the same graphics, titled
+`Dungeon Blitz: R`.
+
+The `Flash Player` workflow repeats this check on Windows and macOS
+(`tools/check-window-title.js`). It starts the game exactly as the launcher does, and
+fails unless the window reads `Dungeon Blitz: R`.
+
 ### What the launcher does for the game page
 
 The projector loads only the SWF, not the game page, so the page's script does not run.

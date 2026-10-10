@@ -12,7 +12,8 @@ const discordAuth = require('./lib/discordAuth');
 const { exists, inspectInstallLocation, isWritableDirectory } = require('./lib/install');
 const { GameHost } = require('./lib/gameHost');
 const { verifyProjector } = require('./lib/integrity');
-const { findProjector, findVendoredProjector, isChosenProjector, projectorCommand, resolveSwfUrl } = require('./lib/projector');
+const { findProjector, findVendoredProjector, isChosenProjector, prepareLaunch, resolveSwfUrl } = require('./lib/projector');
+const { keepGameTitle } = require('./lib/windowTitle');
 const { compatibilitySwitches, describeWindows, unsupportedArchitectureMessage, unsupportedWindowsMessage } = require('./lib/windowsSupport');
 const { PresenceBridge } = require('./lib/presence');
 const { SocialBridge } = require('./lib/social');
@@ -519,12 +520,18 @@ async function launchProjector(serverUrl, settings) {
     }
 
     const swfUrl = await resolveSwfUrl(serverUrl);
-    const { command, args } = projectorCommand(projector, swfUrl);
-    console.log(`[Flash] Starting ${command} ${args.join(' ')}`);
+    let launch;
+    try {
+        launch = prepareLaunch(projector, swfUrl, { workDir: path.join(app.getPath('userData'), 'game') });
+    } catch (error) {
+        return { ok: false, message: `Flash Player could not be prepared: ${(error && error.message) || error}` };
+    }
+    const { command, args, cwd } = launch;
+    console.log(`[Flash] Starting ${command} ${args.join(' ')}${cwd ? ` in ${cwd}` : ''} for ${swfUrl}`);
 
     let child;
     try {
-        child = spawn(command, args, { stdio: 'ignore', windowsHide: false });
+        child = spawn(command, args, { stdio: 'ignore', windowsHide: false, cwd });
     } catch (error) {
         return { ok: false, message: `Flash Player could not be started: ${(error && error.message) || error}` };
     }
@@ -539,7 +546,10 @@ async function launchProjector(serverUrl, settings) {
     child.on('error', (error) => console.log(`[Flash] Flash Player: ${(error && error.message) || error}`));
 
     gameProcess = child;
+    // The window says "Dungeon Blitz: R", never Flash Player's name or the game's address.
+    const title = keepGameTitle(child.pid);
     child.once('exit', (code, signal) => {
+        title.stop();
         console.log(`[Flash] Flash Player exited (${signal || `code ${code}`})`);
         if (gameProcess === child) {
             gameProcess = null;

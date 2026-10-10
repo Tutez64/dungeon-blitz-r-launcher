@@ -143,9 +143,9 @@ function testFindProjector() {
         }
         assert.strictEqual(projector.isChosenProjector(path.join(root, 'pepflashplayer64.dll')), false, 'a plugin is not a projector');
 
-        const command = projector.projectorCommand(found, 'http://a.example/p/cbp/DungeonBlitz.swf');
-        assert.deepStrictEqual(command.args, ['http://a.example/p/cbp/DungeonBlitz.swf'], 'the movie is the one argument');
-        assert.ok(command.command, 'there is something to execute');
+        const launch = projector.prepareLaunch(found, 'http://a.example/p/cbp/DungeonBlitz.swf', { platform: 'win32', workDir: root });
+        assert.deepStrictEqual(launch.args, ['http://a.example/p/cbp/DungeonBlitz.swf'], 'the movie is the one argument');
+        assert.ok(launch.command, 'there is something to execute');
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }
@@ -374,7 +374,51 @@ function testIntegrity() {
     console.log('[test-projector] a changed, swapped or unrecorded Flash Player is refused: OK');
 }
 
+/**
+ * The window title: never the game's address. On macOS Flash Player titles the window with
+ * exactly what it was started on, so it is started on a local file named for the game that
+ * loads the game itself; Windows and Linux rename Flash Player's window instead.
+ */
+function testWindowTitle() {
+    const { buildLoaderSwf } = require('../lib/loaderSwf');
+    const { keepGameTitle, WINDOWS_SCRIPT, GAME_TITLE } = require('../lib/windowTitle');
+    const url = 'http://dungeonblitzr.example/p/cbp/DungeonBlitz.swf?fv=cbp&gv=cbp&clientrev=swf-1';
+
+    // A valid, uncompressed SWF whose only action loads the game into level 0.
+    const swf = buildLoaderSwf(url);
+    assert.strictEqual(swf.toString('ascii', 0, 3), 'FWS');
+    assert.strictEqual(swf.readUInt32LE(4), swf.length, 'the header carries the real length');
+    const getUrl = Buffer.concat([Buffer.from(url), Buffer.from([0]), Buffer.from('_level0'), Buffer.from([0])]);
+    assert.ok(swf.includes(getUrl), 'getURL(game, "_level0")');
+    assert.ok(swf.includes(Buffer.from([0x44, 0x11, 0x01, 0, 0, 0])), 'FileAttributes with UseNetwork');
+    assert.throws(() => buildLoaderSwf('http://a\u0000b'), /NUL/);
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'db-title-'));
+    try {
+        const fake = { path: '/Applications/Flash Player.app', executable: '/Applications/Flash Player.app/Contents/MacOS/Flash Player' };
+        const mac = projector.prepareLaunch(fake, url, { platform: 'darwin', workDir: root });
+        assert.deepStrictEqual(mac.args, ['Dungeon Blitz: R'], 'the bare name is the whole macOS title');
+        assert.strictEqual(mac.cwd, root, 'run from the loader folder, so the name needs no path');
+        assert.ok(fs.readFileSync(path.join(root, 'Dungeon Blitz: R')).equals(buildLoaderSwf(url)), 'the loader points at this game');
+        assert.ok(!mac.args.join(' ').includes('http'), 'no address reaches the macOS title');
+
+        const linux = projector.prepareLaunch({ path: '/x/flashplayer' }, url, { platform: 'linux', workDir: root });
+        assert.deepStrictEqual(linux.args, [url]);
+        assert.strictEqual(linux.cwd, undefined);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+
+    assert.strictEqual(GAME_TITLE, 'Dungeon Blitz: R');
+    assert.ok(WINDOWS_SCRIPT.includes('SetWindowText') && WINDOWS_SCRIPT.includes('HasExited'), 'Windows renames until Flash Player exits');
+    assert.ok(!/EncodedCommand/.test(WINDOWS_SCRIPT), 'no encoded PowerShell');
+    assert.strictEqual(keepGameTitle(0).method, 'none', 'no process, nothing to rename');
+    assert.strictEqual(keepGameTitle(123, { platform: 'darwin' }).method, 'none', 'macOS needs no rename');
+    console.log('[test-projector] the game window is titled "Dungeon Blitz: R", never its address: OK');
+}
+
 async function main() {
+    testWindowTitle();
     testIntegrity();
     testLockFile();
     testSwfUrl();
