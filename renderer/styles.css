@@ -376,6 +376,13 @@ button:focus-visible {
   gap: 8px;
 }
 
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
 .ghost {
   padding: 6px 11px;
   border: 1px solid var(--accent-border);

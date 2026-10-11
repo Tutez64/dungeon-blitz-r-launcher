@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('launcher', {
     quit: () => ipcRenderer.invoke('launcher:quit'),
     updateInstall: () => ipcRenderer.invoke('launcher:updateInstall'),
     gameStatsSync: () => ipcRenderer.invoke('launcher:gameStatsSync'),
+    damageMeterOpen: () => ipcRenderer.invoke('launcher:damageMeterOpen'),
     onState: (handler) => {
         const listener = (_event, state) => handler(state);
         ipcRenderer.on('launcher:state', listener);
