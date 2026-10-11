@@ -84,6 +84,51 @@ chatRelay.on('state', () => pushState());
 const gameStats = new GameStats();
 gameStats.on('state', () => pushState());
 
+// The damage meter (lib/damageMeter): the timer, DPS, damage per spell, the rotation and Dungeon
+// mode, in a window of its own. It reads the game server's combat feed while that window is open
+// during a game session, the way the chat mirror reads the chat feed; nothing on the player's
+// machine is touched. Off with DUNGEON_BLITZ_DAMAGE_METER=0.
+const damageMeterEnabled = process.env.DUNGEON_BLITZ_DAMAGE_METER !== '0';
+// Made when its window first opens, so a player who never opens it pays nothing for it.
+let damageMeter = null;
+let damageMeterWindow = null;
+// The game session it reads, kept for a window opened while the game is already running.
+let damageMeterSession = null;
+
+function setDamageMeterSession(session) {
+    damageMeterSession = damageMeterEnabled ? session : null;
+    if (!damageMeter) {
+        return;
+    }
+    if (damageMeterSession) {
+        damageMeter.attach(damageMeterSession);
+    } else {
+        // Its window stays open with the last fight, for a look or an export.
+        damageMeter.detach();
+    }
+}
+
+function openDamageMeter() {
+    if (!damageMeterEnabled) {
+        return false;
+    }
+    if (!damageMeter) {
+        const { DamageMeter } = require('./lib/damageMeter');
+        damageMeter = new DamageMeter({ dataDir: app.getPath('userData'), version: app.getVersion() });
+        damageMeter.on('state', () => pushState());
+        if (damageMeterSession) {
+            damageMeter.attach(damageMeterSession);
+        }
+    }
+    if (!damageMeterWindow) {
+        // Needs Electron's screen module, which waits for 'ready'.
+        const { DamageMeterWindow } = require('./lib/damageMeter/window');
+        damageMeterWindow = new DamageMeterWindow({ meter: damageMeter, rootDir: LAUNCHER_ROOT, icon: windowIcon, isPackaged: app.isPackaged });
+    }
+    damageMeterWindow.open();
+    return true;
+}
+
 // While the game runs in the standalone projector, the launcher does what the game page's
 // script would have: rich presence and region latency (lib/gameHost.js). FlashBrowser runs
 // the page itself, so it needs none of this.
@@ -439,6 +484,23 @@ function gameStatsSummary() {
     };
 }
 
+/** What the damage meter is doing, for the launcher window. */
+function damageMeterSummary() {
+    if (damageMeter) {
+        return { ...damageMeter.summary(), enabled: damageMeterEnabled };
+    }
+    return {
+        enabled: damageMeterEnabled,
+        open: false,
+        session: Boolean(damageMeterSession),
+        running: false,
+        supported: null,
+        live: false,
+        character: '',
+        lastError: ''
+    };
+}
+
 /** What the chat mirror is doing, for the window's status strip. */
 function chatSummary() {
     const snapshot = chatRelay.snapshot();
@@ -470,6 +532,7 @@ function launcherState() {
         social: socialSummary(),
         chat: chatSummary(),
         gameStats: gameStatsSummary(),
+        damageMeter: damageMeterSummary(),
         install: {
             relocate: Boolean(installLocation.relocate),
             reason: String(installLocation.reason || ''),
@@ -574,6 +637,7 @@ function endGameSession() {
     presence.stop();
     chatRelay.stop();
     gameStats.stop();
+    setDamageMeterSession(null);
     stopAccountPolling();
     if (launcherWindow && !launcherWindow.isDestroyed()) {
         launcherWindow.show();
@@ -795,6 +859,12 @@ async function play({ engine: requested = '', serverId = '' } = {}) {
         void gameStats.sync();
     }
 
+    // The damage meter reads this session's combat feed whenever its window is open.
+    setDamageMeterSession({
+        serverUrl: selected.url,
+        getLauncherToken: () => sessionCache.read().token || ''
+    });
+
     const launched =
         engine === 'flashbrowser' ? await launchFlashBrowser(selected.url) : await launchProjector(selected.url, settings);
     if (!launched.ok) {
@@ -802,6 +872,7 @@ async function play({ engine: requested = '', serverId = '' } = {}) {
         presence.stop();
         chatRelay.stop();
         gameStats.stop();
+        setDamageMeterSession(null);
     }
     pushState();
     return launched;
@@ -1261,6 +1332,7 @@ function registerIpc() {
 
     // The renderer names the button that was pressed; anything else is a plain play.
     ipcMain.handle('launcher:play', (_event, engine) => play({ engine: typeof engine === 'string' ? engine : '' }));
+    ipcMain.handle('launcher:damageMeterOpen', () => openDamageMeter());
     ipcMain.handle('launcher:quit', () => app.quit());
 }
 
@@ -1331,6 +1403,13 @@ if (instrumentation) {
     app.quit();
 } else {
     app.on('second-instance', () => {
+        // The damage meter's window can keep the launcher running after its own window was
+        // closed: starting the launcher again brings that window back.
+        if ((!launcherWindow || launcherWindow.isDestroyed()) && damageMeterWindow && damageMeterWindow.isOpen()) {
+            createLauncherWindow();
+            applyDockIcon();
+            return;
+        }
         const target = launcherWindow;
         if (target && !target.isDestroyed()) {
             if (target.isMinimized()) {
@@ -1395,7 +1474,8 @@ if (instrumentation) {
         }
 
         app.on('activate', () => {
-            if (!BrowserWindow.getAllWindows().length) {
+            // Not "no windows at all": the damage meter's window can outlive the launcher's.
+            if (!launcherWindow || launcherWindow.isDestroyed()) {
                 createLauncherWindow();
                 applyDockIcon();
             }
@@ -1423,6 +1503,9 @@ if (instrumentation) {
         presence.stop();
         chatRelay.stop();
         gameStats.stop();
+        if (damageMeter) {
+            damageMeter.stop();
+        }
         social.stop();
         if (updateService) {
             updateService.stop();

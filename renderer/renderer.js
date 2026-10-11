@@ -22,6 +22,8 @@ const elements = {
     versions: document.getElementById('versions'),
     updateInstall: document.getElementById('update-install'),
     gameStatsSync: document.getElementById('game-stats-sync'),
+    damageMeterOpen: document.getElementById('damage-meter-open'),
+    tools: document.getElementById('tools'),
     quit: document.getElementById('quit'),
     engineStatus: document.getElementById('engine-status')
 };
@@ -368,6 +370,12 @@ function render(state) {
     // Syncing only means something once a session has given the launcher a server to ask, so
     // the button stays off the sign-in screen where there is nothing to write yet.
     elements.gameStatsSync.hidden = !state.gameStats || !state.gameStats.running || state.gameStats.enabled === false;
+    // The damage meter reads a game session's hits and keeps the last fight after it, so it is
+    // offered once there is an account to play with, or while its window is open anyway.
+    const meter = state.damageMeter || {};
+    elements.damageMeterOpen.hidden =
+        meter.enabled === false || !(state.discord.remembered || state.gameRunning || meter.open);
+    elements.tools.hidden = elements.damageMeterOpen.hidden && elements.gameStatsSync.hidden;
 
     renderEngineStatus(state);
     elements.versions.textContent = `v${state.appVersion}`;
@@ -451,6 +459,10 @@ elements.gameStatsSync.addEventListener('click', async () => {
     } finally {
         button.disabled = false;
     }
+});
+
+elements.damageMeterOpen.addEventListener('click', () => {
+    void window.launcher.damageMeterOpen();
 });
 
 elements.moveApp.addEventListener('click', async () => {
