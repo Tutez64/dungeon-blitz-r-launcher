@@ -219,6 +219,78 @@ function checkPackagingCopies(scratch) {
     console.log('[test-flash-browser] packaging copies keep the fingerprint; changes to them do not: OK');
 }
 
+/**
+ * 1.2.2 crashed at start on Windows and macOS: an installed launcher has Electron's embedded asar
+ * integrity on, and Electron kills the process when its asar-aware `fs` touches an archive it has
+ * no record for -- FlashBrowser's own runtime/resources/default_app.asar, read while checking and
+ * fingerprinting FlashBrowser. Here `fs` stands in for Electron's (it notes every .asar path it is
+ * handed) and `original-fs` is the plain one, and finding, checking and starting FlashBrowser must
+ * never hand Electron's `fs` an .asar path.
+ */
+function checkNoAsarAwareFs(scratch) {
+    const Module = require('module');
+    const realFs = require('fs');
+    const touched = [];
+    const asarAware = new Proxy(realFs, {
+        get(target, property) {
+            const value = target[property];
+            if (typeof value !== 'function') {
+                return value;
+            }
+            return (...args) => {
+                if (typeof args[0] === 'string' && /\.asar([\\/]|$)/i.test(args[0])) {
+                    touched.push(`fs.${String(property)}(${args[0]})`);
+                }
+                return value.apply(target, args);
+            };
+        }
+    });
+
+    const libDir = path.join(ROOT, 'lib');
+    const fresh = ['rawFs', 'integrity', 'flashBrowser', 'binary'].map((name) => require.resolve(path.join(libDir, name)));
+    const originalLoad = Module._load;
+    Module._load = function load(request, parent, isMain) {
+        if (parent && parent.filename && parent.filename.startsWith(libDir)) {
+            if (request === 'fs') {
+                return asarAware;
+            }
+            if (request === 'original-fs') {
+                return realFs;
+            }
+        }
+        return originalLoad.call(this, request, parent, isMain);
+    };
+    for (const file of fresh) {
+        delete require.cache[file];
+    }
+
+    try {
+        const electronLike = require(path.join(libDir, 'flashBrowser'));
+        const integrity = require(path.join(libDir, 'integrity'));
+        const root = path.join(scratch, 'asar', 'win32-x64');
+        makeFlashBrowser(root, 'win32-x64');
+        write(path.join(root, 'runtime', 'resources', 'default_app.asar'), "an archive of Electron's own");
+        const record = path.join(scratch, 'asar', 'flashbrowser.integrity.json');
+        integrity.writeExpected(root, { platform: 'win32-x64', version: FLASH_VERSION }, record);
+
+        const located = electronLike.findFlashBrowser({ platform: 'win32', arch: 'x64', directories: [root] });
+        assert.ok(located.found, 'FlashBrowser is found');
+        assert.deepStrictEqual(
+            electronLike.verifyFlashBrowser(root, { target: 'win32-x64', integrityPath: record }),
+            { ok: true, reason: '' },
+            'and checked against its fingerprint'
+        );
+        electronLike.prepareFlashBrowserLaunch(located.found, { gameUrl: 'http://x/', userDataDir: 'd', env: {} });
+        assert.deepStrictEqual(touched, [], "Electron's asar-aware fs is never handed an .asar path");
+    } finally {
+        Module._load = originalLoad;
+        for (const file of fresh) {
+            delete require.cache[file];
+        }
+    }
+    console.log("[test-flash-browser] FlashBrowser is found and checked without Electron's asar handling: OK");
+}
+
 function checkLockAndPackaging() {
     const lock = JSON.parse(fs.readFileSync(path.join(ROOT, 'flashbrowser.lock.json'), 'utf8'));
     assert.strictEqual(lock.flash, FLASH_VERSION, 'the lock and the launcher name the same plugin build');
@@ -279,6 +351,7 @@ function main() {
         checkLaunch();
         checkIntegrity(scratch);
         checkPackagingCopies(scratch);
+        checkNoAsarAwareFs(scratch);
         checkLockAndPackaging();
         checkSavedEngine(scratch);
     } finally {
