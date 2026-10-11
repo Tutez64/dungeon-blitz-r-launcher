@@ -251,6 +251,36 @@ jobs:
               ;;
           esac
 
+      - name: Start the packaged launcher
+        if: matrix.platform != 'linux'
+        shell: bash
+        # The finished launcher has to start. 1.2.2 passed every check above and still died within a
+        # second on every Windows and macOS machine: the installed launcher's Electron fuses kill
+        # the process for things a development run never does. This starts the unpacked package as
+        # built and fails if it exits or logs a FATAL line. (Linux has no asar integrity fuse.)
+        run: |
+          case "${{ matrix.platform }}" in
+            darwin) exe="$(find dist -maxdepth 5 -path '*.app/Contents/MacOS/Dungeon Blitz R' | head -1)" ;;
+            win32) exe="$(find dist -maxdepth 2 -path '*unpacked/Dungeon Blitz R.exe' | head -1)" ;;
+          esac
+          test -n "$exe" || { echo "the packaged launcher is missing"; exit 1; }
+          node tools/smoke-launch.js "$exe" --seconds 20
+
+      - name: Mark the draft release as not to be published
+        # electron-builder has already uploaded this job's installers to the draft. A draft from a
+        # failed run looks like any other, and 1.2.2 was published from one, so say so on it. A
+        # later run that succeeds sets the release's name and notes again when it publishes.
+        if: failure() && matrix.publish_mode == 'always'
+        shell: bash
+        run: |
+          version=$(jq -r .version package.json)
+          gh release edit "v$version" --repo "$GITHUB_REPOSITORY" \
+            --title "v$version - DO NOT PUBLISH (the ${{ matrix.label }} build failed)" \
+            --notes "The ${{ matrix.label }} build of this release failed. Its installers here may be broken. Fix the build and run the Release workflow again; do not publish this draft." \
+            || echo "No draft release to mark."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: List what was built
         shell: bash
         run: ls -la dist/*.exe dist/*.dmg dist/*.zip dist/*.AppImage dist/*.deb dist/latest*.yml 2>/dev/null || true
