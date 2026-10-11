@@ -260,7 +260,7 @@ jobs:
         # built and fails if it exits or logs a FATAL line. (Linux has no asar integrity fuse.)
         run: |
           case "${{ matrix.platform }}" in
-            darwin) exe="$(find dist -maxdepth 4 -path '*.app/Contents/MacOS/Dungeon Blitz R' | head -1)" ;;
+            darwin) exe="$(find dist -maxdepth 5 -path '*.app/Contents/MacOS/Dungeon Blitz R' | head -1)" ;;
             win32) exe="$(find dist -maxdepth 2 -path '*unpacked/Dungeon Blitz R.exe' | head -1)" ;;
           esac
           test -n "$exe" || { echo "the packaged launcher is missing"; exit 1; }
