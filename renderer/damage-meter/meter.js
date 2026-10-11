@@ -24,6 +24,8 @@ const MARGIN = 12;
 const SPELLS_SHARE = 0.62; // of the window's height, for the Spells panel when the Rotation panel sits under it
 const SPELLS_NARROW = 150; // below this the Spells rows stack their numbers
 const GAP = 6;
+const FONT_MIN = 11; // px: the panels' text, at its smallest
+const FONT_MAX = 14;
 const PANELS = ['fight', 'rotation', 'spells'];
 
 
@@ -371,8 +373,6 @@ class Overlay {
         const g = this.geometry();
         this.geo = g;
         const hidden = Boolean(this.view && this.view.settings.hidden);
-        const fs = Math.max(11, Math.min(14, g.width / 20));
-        this.root.style.setProperty('--fs', fs.toFixed(1) + 'px');
         this.reveal.hidden = !hidden;
         const fr = this.layoutState.rects.fight;
         Object.assign(this.reveal.style, {
@@ -394,9 +394,50 @@ class Overlay {
         // Room is kept under it for the Rotation panel.
         else this.place(this.panels.spells, 2 * MARGIN + g.width, MARGIN, g.width, 0, Math.round((g.H - 2 * MARGIN) * SPELLS_SHARE));
         this.panels.spells.classList.toggle('narrow', this.panels.spells.offsetWidth < SPELLS_NARROW);
+        this.fitFont();
         // Rotation: under the Spells panel.
         if (rects.rotation) this.placeSaved(this.panels.rotation, rects.rotation, g);
         else this.dockRotation();
+    }
+
+    /** The text size the column's width allows. */
+    fontCap(g) {
+        return Math.max(FONT_MIN, Math.min(FONT_MAX, g.width / 20));
+    }
+
+    /**
+     * The text as large as the column's width allows, then smaller (down to FONT_MIN) until the
+     * Damage Meter panel fits the window's height without a scrollbar: its notes come and go
+     * (Dungeon mode, hits not counted, a saved export), and a short screen has less room. A panel
+     * the player resized keeps the size they gave it and scrolls instead.
+     */
+    fitFont() {
+        const g = this.geo;
+        if (!g || !this.root) return;
+        const set = (tenths) => this.root.style.setProperty('--fs', (tenths / 10).toFixed(1) + 'px');
+        const f = this.panels.fight;
+        const overflows = () => f.scrollHeight > f.clientHeight;
+        const cap = Math.round(this.fontCap(g) * 10);
+        set(cap);
+        const saved = this.layoutState.rects.fight;
+        if (f.hidden || (saved && saved.h)) return;
+        // Measured without a scrollbar: one left over from a size too large would narrow the
+        // panel and wrap more lines, so a size that fits would not look like it.
+        f.style.overflowY = 'hidden';
+        if (overflows()) {
+            // Lines stop wrapping as the text gets smaller, so the panel's height does not follow
+            // the text size in proportion: the largest size that fits is searched for, to 0.1 px.
+            let lo = FONT_MIN * 10;
+            let hi = cap - 1;
+            while (lo < hi) {
+                const mid = Math.ceil((lo + hi) / 2);
+                set(mid);
+                if (overflows()) hi = mid - 1;
+                else lo = mid;
+            }
+            set(lo);
+        }
+        f.style.overflowY = '';
     }
 
     /* ---------- rendering ---------- */
@@ -463,7 +504,9 @@ class Overlay {
             this.lastHidden = view.settings.hidden;
             this.layout();
         } else if (!this.drag) {
-            // The Spells panel's height moves with its content; the Rotation panel follows it.
+            // The Damage Meter's notes change its height, and the text size follows; the Spells
+            // panel's height moves with its content, and the Rotation panel follows it.
+            this.fitFont();
             this.dockRotation();
         }
     }

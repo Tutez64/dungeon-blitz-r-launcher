@@ -32,6 +32,9 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #1d1e26; }
 }
 #dbdps .panel { resize: both; }
 #dbdps .panel.fight { overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; }
+/* The Damage Meter scrolls when it is taller than the window: its rows keep their height (the
+   Scaling bar and the graph would otherwise be squeezed flat first). */
+#dbdps .panel.fight > * { flex-shrink: 0; }
 #dbdps .panel.dragging { opacity: 0.92; box-shadow: inset 0 0 0 3px var(--ink-solid), inset 0 0 0 4px var(--brass-dim), 0 10px 26px rgba(0,0,0,0.5); }
 #dbdps .head { display: flex; align-items: center; gap: 0.45em; min-height: 1.5em; }
 #dbdps .head { cursor: move; }
