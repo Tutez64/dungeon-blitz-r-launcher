@@ -12,6 +12,7 @@ const discordAuth = require('./lib/discordAuth');
 const { exists, inspectInstallLocation, isWritableDirectory } = require('./lib/install');
 const { GameHost } = require('./lib/gameHost');
 const { findFlashBrowser, prepareFlashBrowserLaunch, verifyFlashBrowser } = require('./lib/flashBrowser');
+const { openGameTunnel } = require('./lib/gameTunnel');
 const { verifyProjector } = require('./lib/integrity');
 const { findProjector, findVendoredProjector, isChosenProjector, prepareLaunch, resolveSwfUrl } = require('./lib/projector');
 const { keepGameTitle } = require('./lib/windowTitle');
@@ -751,17 +752,26 @@ async function launchFlashBrowser(serverUrl) {
         }
     }
 
+    // A game port the player's network blocks goes through the server's WebSocket instead.
+    const tunnel = await openGameTunnel(serverUrl, { log: (message) => console.log(`[Tunnel] ${message}`) });
     const launch = prepareFlashBrowserLaunch(found, {
         gameUrl: serverUrl,
         // Its own profile: two Chromium versions must never share one.
         userDataDir: path.join(app.getPath('userData'), 'flashbrowser'),
-        devTools: !app.isPackaged
+        devTools: !app.isPackaged,
+        hostRules: tunnel ? tunnel.hostRules : ''
     });
     console.log(`[FlashBrowser] Starting ${launch.command} for ${serverUrl}`);
 
     const started = await spawnGame('flashbrowser', 'FlashBrowser', launch);
     if (!started.ok) {
+        if (tunnel) {
+            tunnel.stop();
+        }
         return started;
+    }
+    if (tunnel) {
+        started.child.once('exit', () => tunnel.stop());
     }
     // Whoever the game ends up signing in as is remembered for the next launch.
     startAccountPolling();
