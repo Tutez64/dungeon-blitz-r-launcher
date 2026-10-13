@@ -123,6 +123,22 @@ function checkLaunch() {
         assert.ok(host.includes(`option('${name}')`), `flashbrowser/main.js reads --db-${name}`);
     }
     assert.ok(host.includes("'--db-devtools'"), 'flashbrowser/main.js reads --db-devtools');
+
+    // The game's own 100 fps and no system proxy, unless the player asks for either back.
+    assert.ok(host.includes("'disable-frame-rate-limit'") && host.includes("'disable-gpu-vsync'"), 'Chromium does not pace the game to the display');
+    assert.ok(host.includes("'no-proxy-server'"), 'the game window skips the system proxy');
+    for (const flag of ['--db-vsync', '--db-system-proxy']) {
+        assert.ok(!launch.args.includes(flag), `${flag} only when asked for`);
+        assert.ok(host.includes(`'${flag}'`), `flashbrowser/main.js reads ${flag}`);
+    }
+    const asked = prepareFlashBrowserLaunch(found, { gameUrl: 'http://x/', userDataDir: 'd', env: { DB_VSYNC: '1', DB_SYSTEM_PROXY: '1' } });
+    assert.ok(asked.args.includes('--db-vsync') && asked.args.includes('--db-system-proxy'), 'DB_VSYNC=1 and DB_SYSTEM_PROXY=1 reach the game window');
+
+    // A tunnelled game socket: the window resolves the game host to the launcher.
+    const tunnelled = prepareFlashBrowserLaunch(found, { gameUrl: 'http://x/', userDataDir: 'd', hostRules: 'MAP x 127.0.0.1', env: {} });
+    assert.ok(tunnelled.args.includes('--db-host-rules=MAP x 127.0.0.1'));
+    assert.ok(!launch.args.some((arg) => arg.startsWith('--db-host-rules')), 'no host rules without a tunnel');
+    assert.ok(host.includes("option('host-rules')"), 'flashbrowser/main.js reads --db-host-rules');
     console.log('[test-flash-browser] FlashBrowser is started on the game page with the plugin, in its own profile: OK');
 }
 

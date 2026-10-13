@@ -20,6 +20,10 @@
  *   --db-flash-version=<v>     the plugin's version, repeated back to the page
  *   --db-user-data=<dir>       this window's own profile (cookies, local storage, window size)
  *   --db-devtools              allow developer tools (a development checkout only)
+ *   --db-vsync                 keep Chromium's frame pacing (for a display that tears without it)
+ *   --db-system-proxy          send the window's traffic through the system proxy
+ *   --db-host-rules=<rules>    Chromium host-resolver-rules, set while the game socket is
+ *                              tunnelled (lib/gameTunnel.js)
  */
 
 const fs = require('fs');
@@ -72,6 +76,25 @@ if (!startable) {
 // Chromium reads the plugin switches once, while it starts up.
 app.commandLine.appendSwitch('ppapi-flash-path', pluginPath);
 app.commandLine.appendSwitch('ppapi-flash-version', flashVersion);
+
+// The game asks for 100 fps (Main.as sets stage.frameRate = 100 on Flash 11+), but Chromium
+// paces plugins to the display, usually 60. Without that pacing the game runs at its own rate,
+// as it does in the standalone Flash Player.
+if (!process.argv.includes('--db-vsync')) {
+    app.commandLine.appendSwitch('disable-frame-rate-limit');
+    app.commandLine.appendSwitch('disable-gpu-vsync');
+}
+
+// The window only ever talks to the game server. VPN programs often set a system proxy, and
+// the Flash socket and the page then went to the proxy instead of the server.
+if (!process.argv.includes('--db-system-proxy')) {
+    app.commandLine.appendSwitch('no-proxy-server');
+}
+
+const hostRules = option('host-rules');
+if (hostRules) {
+    app.commandLine.appendSwitch('host-resolver-rules', hostRules);
+}
 app.setName(TITLE);
 if (userDataDir) {
     app.setPath('userData', userDataDir);

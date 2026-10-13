@@ -95,7 +95,21 @@ Node 12. It:
 - opens the selected server's game page with the plugin, titled `Dungeon Blitz: R`;
 - keeps the window on the game's origin and sends every other link to the system browser;
 - keeps its own profile (`<user data>/flashbrowser`), never the launcher's;
-- restarts the page's Discord sign-in poll when the in-game sign-in opens the browser.
+- restarts the page's Discord sign-in poll when the in-game sign-in opens the browser;
+- lets the game run at its own 100 fps (`stage.frameRate = 100`): Chromium otherwise paces
+  the plugin to the display, usually 60. `DB_VSYNC=1` on the launcher keeps Chromium's pacing,
+  for a display that tears without it;
+- ignores the system proxy, which VPN programs often set and which then received the game's
+  socket and page instead of the server. `DB_SYSTEM_PROXY=1` uses it again.
+
+When the game port does not answer from the player's network (a firewall or provider that
+only lets web traffic out), the launcher tunnels the game socket through the server's
+WebSocket (`wss://<host>/game-ws`, the web client's socket) before it opens the window
+(`lib/gameTunnel.js`). The server names both on `GET /api/launcher/game-socket`. The launcher
+listens on 127.0.0.1 on the game port, 80 and 443, the window resolves the game host to
+127.0.0.1 (`--db-host-rules`), and only the game port's bytes change route: the page and its
+files are piped to the real server unchanged. A server without the route or without a
+WebSocket, a reachable game port, or a port that cannot be opened here all play direct.
 
 The game page runs its own script there, so rich presence and region latency come from the
 page, as they always did in a browser. `lib/gameHost.js` stays off.
