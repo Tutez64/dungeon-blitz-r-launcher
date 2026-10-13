@@ -192,6 +192,35 @@ backend exists, so VDPAU does not open and Flash Player draws in software, as it
 any machine without VDPAU. A player whose driver does draw the game correctly can keep
 hardware drawing by starting the launcher with `DUNGEON_BLITZ_FLASH_VDPAU=1`.
 
+#### Frame rate on Linux
+
+The Linux Flash Player asks the kernel for its stack limit (`getrlimit`) many times per
+frame. Each ask is a system call. On a kernel that mitigates SRSO, the default on AMD Zen 1
+to 4, a system call costs about 200 ns. Profiled in a dungeon on a Ryzen 7 3700X, that one
+call took 40% of Flash Player's main thread, and the game ran at 15-30 fps.
+
+A process's limits only change when it sets them, so the answer can be kept.
+`native_flash/flash_rlimit_cache.c` does that: it answers `getrlimit` from memory and
+forgets the kept answer on `setrlimit`. The launcher loads it into Flash Player with
+`LD_PRELOAD`, and the same dungeon then runs at roughly 30-60 fps.
+
+- `tools/build-flash-preload.js` compiles every `native_flash/*.c` into
+  `vendor/flashpreload/linux/` (`npm run build-flash-preload`; `predist:linux` and the
+  release workflow run it). It needs a C compiler and `readelf`.
+- Each library is checked as it is built. It must need nothing newer than glibc 2.17, and
+  a shell started with it must get its `getrlimit` and `setrlimit` from it and still see
+  the kernel's limits.
+- The folder is fingerprinted into `lib/flashpreload.integrity.json`, and a packaged
+  launcher checks it before every game, as it checks Flash Player.
+- The libraries go into `LD_PRELOAD` by bare name, with their folder first in
+  `LD_LIBRARY_PATH`. `LD_PRELOAD` splits on spaces, and the .deb installs into
+  `/opt/Dungeon Blitz R`. What the player already preloads, such as MangoHud, is kept.
+- `DUNGEON_BLITZ_FLASH_PRELOAD=0` starts Flash Player without them.
+
+```bash
+node tools/test-flash-preload.js
+```
+
 #### The window title
 
 FlashBrowser's window is the launcher's own app, so it simply keeps that title. In Flash
