@@ -11,9 +11,11 @@
  * Each library is checked before it is kept:
  *   - it needs nothing newer than glibc MAX_GLIBC, so the package still plays on an older
  *     distribution than the one it was built on;
- *   - a shell started with it really calls the library's getrlimit and setrlimit (ld.so's
- *     own binding log says so), and its answers are the kernel's, before and after the shell
- *     lowers its stack limit.
+ *   - a program without GLib starts with it preloaded, even with LD_BIND_NOW: whatever
+ *     Flash Player starts inherits LD_PRELOAD;
+ *   - one that takes getrlimit over: a shell started with it really calls the library's
+ *     getrlimit and setrlimit (ld.so's own binding log says so), and its answers are the
+ *     kernel's, before and after the shell lowers its stack limit.
  *
  * Only Linux has anything to build; for another platform the folder is cleared and nothing
  * else happens. Needs a C compiler (`cc`, or $CC) and binutils' `readelf`.
@@ -65,40 +67,77 @@ function newerThan([major, minor], [maxMajor, maxMinor]) {
     return major > maxMajor || (major === maxMajor && minor > maxMinor);
 }
 
-/**
- * The stack limit a shell reports, then again after lowering it, with `env`. `ulimit` is the
- * shell's own getrlimit and setrlimit.
- */
-function shellLimits(env) {
-    const result = spawnSync('sh', ['-c', 'ulimit -s; ulimit -s 1024; ulimit -s; ulimit -n'], { encoding: 'utf8', env });
-    return { lines: result.stdout.trim().split('\n'), log: result.stderr };
+/** The functions a library defines, which are the ones it takes over in Flash Player. */
+function definedFunctions(library) {
+    const symbols = execFileSync('readelf', ['--dyn-syms', '--wide', library], { encoding: 'utf8' });
+    const names = new Set();
+    for (const line of symbols.split('\n')) {
+        const fields = line.trim().split(/\s+/);
+        // Num: Value Size Type Bind Vis Ndx Name
+        if (fields.length >= 8 && fields[3] === 'FUNC' && fields[4] === 'GLOBAL' && fields[6] !== 'UND') {
+            names.add(fields[7].split('@')[0]);
+        }
+    }
+    return names;
+}
+
+/** A shell started with `library` preloaded the way lib/projector.js does it, with `env` added. */
+function preloadedShell(library, script, env = {}) {
+    return spawnSync('sh', ['-c', script], {
+        encoding: 'utf8',
+        env: {
+            ...process.env,
+            // The bare name, its folder in LD_LIBRARY_PATH.
+            LD_LIBRARY_PATH: path.dirname(library),
+            LD_PRELOAD: path.basename(library),
+            ...env
+        }
+    });
 }
 
 /**
- * Checks one built library: its glibc needs, and that a program started with it gets its
- * getrlimit and setrlimit from it and still sees the kernel's limits, before and after it
- * changes one.
+ * Whatever Flash Player starts inherits LD_PRELOAD, so the library has to load into any
+ * program, GLib or not, even one that resolves every symbol up front.
+ */
+function checkLoadsAnywhere(library) {
+    const name = path.basename(library);
+    const result = preloadedShell(library, 'echo started', { LD_BIND_NOW: '1' });
+    assert.ok(
+        result.status === 0 && result.stdout.trim() === 'started' && !/ld\.so|symbol lookup error/.test(result.stderr),
+        `a program started with ${name} does not run: ${result.stderr.trim()}`
+    );
+}
+
+/**
+ * For a library that takes getrlimit over: a shell started with it gets its getrlimit and
+ * setrlimit from it, and still sees the kernel's limits, before and after it lowers one.
+ * `ulimit` is the shell's own getrlimit and setrlimit.
+ */
+function checkRlimit(library) {
+    const name = path.basename(library);
+    const script = 'ulimit -s; ulimit -s 1024; ulimit -s; ulimit -n';
+    const plain = spawnSync('sh', ['-c', script], { encoding: 'utf8', env: { ...process.env, LD_PRELOAD: '' } });
+    const preloaded = preloadedShell(library, script, { LD_DEBUG: 'bindings' });
+    for (const symbol of ['getrlimit', 'setrlimit']) {
+        assert.ok(
+            new RegExp(`to [^\\n]*/${name.replace(/\./g, '\\.')} \\[\\d+\\]: normal symbol \`${symbol}'`).test(preloaded.stderr),
+            `the shell's ${symbol} does not come from ${name}`
+        );
+    }
+    assert.deepStrictEqual(preloaded.stdout, plain.stdout, `with ${name}, the shell sees other limits than the kernel's`);
+}
+
+/**
+ * Checks one built library: its glibc needs, that it loads anywhere, and what it takes over.
  */
 function checkLibrary(library) {
     const name = path.basename(library);
     const tooNew = glibcVersions(library).filter((version) => newerThan(version, MAX_GLIBC));
     assert.deepStrictEqual(tooNew, [], `${name} needs glibc ${tooNew.map((v) => v.join('.')).join(', ')}, newer than ${MAX_GLIBC.join('.')}`);
-
-    const plain = shellLimits({ ...process.env, LD_PRELOAD: '' });
-    const preloaded = shellLimits({
-        ...process.env,
-        // The way lib/projector.js loads it: the bare name, its folder in LD_LIBRARY_PATH.
-        LD_LIBRARY_PATH: path.dirname(library),
-        LD_PRELOAD: name,
-        LD_DEBUG: 'bindings'
-    });
-    for (const symbol of ['getrlimit', 'setrlimit']) {
-        assert.ok(
-            new RegExp(`to [^\\n]*/${name.replace(/\./g, '\\.')} \\[\\d+\\]: normal symbol \`${symbol}'`).test(preloaded.log),
-            `the shell's ${symbol} does not come from ${name}`
-        );
+    checkLoadsAnywhere(library);
+    if (definedFunctions(library).has('getrlimit')) {
+        checkRlimit(library);
     }
-    assert.deepStrictEqual(preloaded.lines, plain.lines, `with ${name}, the shell sees other limits than the kernel's`);
 }
 
 /** Compiles every native_flash/*.c into `target`, checking each library. */
@@ -145,7 +184,7 @@ function main() {
     console.log(`[build-flash-preload] fingerprint ${record.digest} -> lib/flashpreload.integrity.json`);
 }
 
-module.exports = { buildLibraries, checkLibrary, glibcVersions, MAX_GLIBC };
+module.exports = { buildLibraries, checkLibrary, definedFunctions, glibcVersions, MAX_GLIBC };
 
 if (require.main === module) {
     try {

@@ -204,12 +204,25 @@ A process's limits only change when it sets them, so the answer can be kept.
 forgets the kept answer on `setrlimit`. The launcher loads it into Flash Player with
 `LD_PRELOAD`, and the same dungeon then runs at roughly 30-60 fps.
 
+Flash Player also paces itself with three GLib timers of 10 ms, and starts each step of a
+frame on a tick. A frame that runs a little past one tick waits for the next, so frame
+times came in two bands, 10-14 ms and 18-24 ms, and the main thread spent about a quarter
+of its time waiting. `native_flash/flash_short_tick.c` makes `g_timeout_add` timers of
+10 ms tick every 2 ms; other timers are left alone. Flash Player still decides on its own
+clock when a frame is due, so the game keeps its speed and its 100 fps cap. Standing still
+in the same spot of a dungeon, full screen at high quality: 78.5 fps before, 85.3 fps
+after, with the two-tick frames down from 21% to 0.5%.
+
 - `tools/build-flash-preload.js` compiles every `native_flash/*.c` into
   `vendor/flashpreload/linux/` (`npm run build-flash-preload`; `predist:linux` and the
   release workflow run it). It needs a C compiler and `readelf`.
 - Each library is checked as it is built. It must need nothing newer than glibc 2.17, and
-  a shell started with it must get its `getrlimit` and `setrlimit` from it and still see
-  the kernel's limits.
+  a program without GLib must still start with it, even with `LD_BIND_NOW`: whatever Flash
+  Player starts inherits `LD_PRELOAD`. For the `getrlimit` cache, a shell started with it
+  must get its `getrlimit` and `setrlimit` from it and still see the kernel's limits.
+- Neither library looks anything up with `dlsym`, which moved to a newer glibc symbol
+  version in 2.34. The cache calls the kernel through `syscall`, and the short tick calls
+  GLib's `g_timeout_add_full`, which `g_timeout_add` is.
 - The folder is fingerprinted into `lib/flashpreload.integrity.json`, and a packaged
   launcher checks it before every game, as it checks Flash Player.
 - The libraries go into `LD_PRELOAD` by bare name, with their folder first in

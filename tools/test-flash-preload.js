@@ -4,7 +4,8 @@
 /**
  * The libraries loaded into the Linux Flash Player (native_flash/): how the launcher finds
  * them, how it puts them in Flash Player's environment, the tamper check on them, and -- on
- * a Linux machine with a C compiler -- that they build and do what they say.
+ * a Linux machine with a C compiler, and GLib's development files for the short tick -- that
+ * they build and do what they say.
  *
  * Usage: node tools/test-flash-preload.js
  */
@@ -40,6 +41,9 @@ function testEnvironment() {
 
     const colon = projector.linuxFlashEnv({}, { directory: '/home/a:b/vendor/flashpreload/linux', libraries: ['flash_rlimit_cache.so'] });
     assert.strictEqual(colon.LD_PRELOAD, undefined, 'a folder LD_LIBRARY_PATH cannot name is left out');
+
+    const both = projector.linuxFlashEnv({}, { directory: preload.directory, libraries: ['flash_rlimit_cache.so', 'flash_short_tick.so'] });
+    assert.strictEqual(both.LD_PRELOAD, 'flash_rlimit_cache.so flash_short_tick.so', 'every library in the folder');
 
     assert.strictEqual(projector.linuxFlashEnv({}, null).LD_PRELOAD, undefined, 'a build without one changes nothing');
 
@@ -90,33 +94,104 @@ function haveTool(command) {
     return spawnSync(command, ['--version'], { stdio: 'ignore' }).status === 0;
 }
 
+function haveToolchain() {
+    return process.platform === 'linux' && haveTool(process.env.CC || 'cc') && haveTool('readelf');
+}
+
+/** Builds the libraries in a sources folder holding just `files`, as the build tool would. */
+function buildFrom(root, name, files) {
+    const { buildLibraries } = require('./build-flash-preload');
+    const sources = path.join(root, `${name}-sources`);
+    fs.mkdirSync(sources);
+    for (const [file, text] of Object.entries(files)) {
+        fs.writeFileSync(path.join(sources, file), text);
+    }
+    return buildLibraries(path.join(root, name), { sources });
+}
+
 function testBuild() {
-    const cc = process.env.CC || 'cc';
-    if (process.platform !== 'linux' || !haveTool(cc) || !haveTool('readelf')) {
+    if (!haveToolchain()) {
         console.log('[test-flash-preload] no Linux C toolchain here; the libraries were not built');
         return;
     }
-    const { buildLibraries, checkLibrary } = require('./build-flash-preload');
+    const { buildLibraries } = require('./build-flash-preload');
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'db flash preload '));
     try {
         // A folder with spaces, like the .deb's.
-        const built = buildLibraries(path.join(root, 'linux'));
-        assert.ok(built.some((library) => library.endsWith('flash_rlimit_cache.so')), 'flash_rlimit_cache.so is built');
+        const built = buildLibraries(path.join(root, 'linux')).map((library) => path.basename(library));
+        assert.deepStrictEqual(built, ['flash_rlimit_cache.so', 'flash_short_tick.so']);
 
-        // The check catches a library that does not take getrlimit over.
-        const sources = path.join(root, 'sources');
-        fs.mkdirSync(sources);
-        fs.writeFileSync(path.join(sources, 'inert.c'), 'int inert(void) { return 0; }\n');
-        const inert = path.join(root, 'inert');
-        assert.throws(() => buildLibraries(inert, { sources }), /getrlimit does not come from inert\.so/);
-        assert.throws(() => checkLibrary(path.join(inert, 'inert.so')), /getrlimit/);
+        // A getrlimit that does not answer as the kernel does is refused.
+        const liar = 'struct limit { unsigned long soft, hard; };\n' +
+            'int getrlimit(int resource, struct limit *limit) { (void)resource; limit->soft = limit->hard = 1234; return 0; }\n';
+        assert.throws(() => buildFrom(root, 'liar', { 'liar.c': liar }), /liar\.so/);
+
+        // So is a library a program without it cannot start with.
+        const needy = 'extern int db_missing(void);\nint db_needs_missing(void) { return db_missing(); }\n';
+        assert.throws(() => buildFrom(root, 'needy', { 'needy.c': needy }), /does not run/);
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }
-    console.log('[test-flash-preload] the libraries build, need only an old glibc, and answer as the kernel does: OK');
+    console.log('[test-flash-preload] the libraries build, need only an old glibc, and load into any program: OK');
+}
+
+/** How often a 10 ms and a 50 ms GLib timer fire in 300 ms, with `env`. */
+const TICKS_PROGRAM = `#include <glib.h>
+#include <stdio.h>
+static int ten, fifty;
+static GMainLoop *loop;
+static gboolean on_ten(gpointer data) { (void)data; ten++; return TRUE; }
+static gboolean on_fifty(gpointer data) { (void)data; fifty++; return TRUE; }
+static gboolean on_stop(gpointer data) { (void)data; g_main_loop_quit(loop); return FALSE; }
+int main(void) {
+    loop = g_main_loop_new(NULL, FALSE);
+    g_timeout_add(10, on_ten, NULL);
+    g_timeout_add(50, on_fifty, NULL);
+    g_timeout_add(300, on_stop, NULL);
+    g_main_loop_run(loop);
+    printf("%d %d\\n", ten, fifty);
+    return 0;
+}
+`;
+
+function testShortTick() {
+    const glib = spawnSync('pkg-config', ['--cflags', '--libs', 'glib-2.0'], { encoding: 'utf8' });
+    if (!haveToolchain() || glib.status !== 0) {
+        console.log('[test-flash-preload] no GLib development files here; the short tick was not run');
+        return;
+    }
+    const { buildLibraries } = require('./build-flash-preload');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'db-short-tick-'));
+    try {
+        const linux = path.join(root, 'linux');
+        buildLibraries(linux);
+        const program = path.join(root, 'ticks');
+        fs.writeFileSync(`${program}.c`, TICKS_PROGRAM);
+        const compiled = spawnSync(process.env.CC || 'cc', ['-o', program, `${program}.c`, ...glib.stdout.trim().split(/\s+/)], {
+            encoding: 'utf8'
+        });
+        assert.strictEqual(compiled.status, 0, compiled.stderr);
+
+        const count = (env) => {
+            const result = spawnSync(program, { encoding: 'utf8', env: { ...process.env, ...env } });
+            assert.strictEqual(result.status, 0, result.stderr);
+            const [ten, fifty] = result.stdout.trim().split(' ').map(Number);
+            return { ten, fifty };
+        };
+        const plain = count({ LD_PRELOAD: '' });
+        const short = count({ LD_LIBRARY_PATH: linux, LD_PRELOAD: 'flash_short_tick.so' });
+        // 10 ms ticks become 2 ms ones: about 150 in 300 ms instead of 30. Loose bounds, for a
+        // busy CI machine.
+        assert.ok(short.ten >= 2 * plain.ten, `the 10 ms timer ticks faster: ${plain.ten} -> ${short.ten}`);
+        assert.ok(Math.abs(short.fifty - plain.fifty) <= 1, `a 50 ms timer is left alone: ${plain.fifty} -> ${short.fifty}`);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+    console.log('[test-flash-preload] 10 ms GLib timers tick every 2 ms, other timers as they were: OK');
 }
 
 testEnvironment();
 testFindAndVerify();
 testBuild();
+testShortTick();
 console.log('[test-flash-preload] all assertions passed');
